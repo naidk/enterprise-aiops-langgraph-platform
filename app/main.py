@@ -67,13 +67,8 @@ app.add_middleware(
 )
 
 # ── Routers ───────────────────────────────────────────────────────────────────
-# TODO Stage 2: import and mount routers
-# from app.api.incidents import router as incidents_router
-# from app.api.metrics   import router as metrics_router
-# from app.api.pipeline  import router as pipeline_router
-# app.include_router(incidents_router, prefix="/api/v1")
-# app.include_router(metrics_router,   prefix="/api/v1")
-# app.include_router(pipeline_router,  prefix="/api/v1")
+from app.api.router import router as api_router
+app.include_router(api_router)
 
 
 # ── Built-in endpoints ────────────────────────────────────────────────────────
