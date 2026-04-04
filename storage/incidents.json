@@ -1,1 +1,50 @@
-[]
+[
+  {
+    "incident_id": "INC-E03980DB",
+    "title": "",
+    "description": "",
+    "severity": "high",
+    "status": "resolved",
+    "failure_type": "bad_deployment",
+    "service": "frontend",
+    "log_entries": [],
+    "rca_findings": [],
+    "remediation_steps": [],
+    "jira_ticket": null,
+    "agent_results": [],
+    "audit_trail": [
+      "[INC-E03980DB] MonitoringAgent: confirmed=True, service=frontend",
+      "[INC-E03980DB] LogAnalysisAgent: findings=2, patterns=['Memory exhaustion \u2014 container OOMKilled', 'Deployment regression \u2014 readiness probe failure']",
+      "[INC-E03980DB] IncidentClassifierAgent: severity=high, failure_type=bad_deployment, escalate=False, patterns=['Memory exhaustion \u2014 container OOMKilled', 'Deployment regression \u2014 readiness probe failure']",
+      "[INC-E03980DB] RemediationAgent: plan_steps=2, executed=True, success=True",
+      "[INC-E03980DB] ValidationAgent: validation_passed=True, final_status=resolved",
+      "[INC-E03980DB] JiraReportingAgent: ticket=AIOPS-BC1F46B7, url=https://jira.example.com/browse/AIOPS-STUB"
+    ],
+    "created_at": "2026-04-04T22:05:34.494583Z",
+    "updated_at": "2026-04-04T22:05:34.494583Z",
+    "resolved_at": null
+  },
+  {
+    "incident_id": "INC-A0C1C46B",
+    "title": "",
+    "description": "",
+    "severity": "unknown",
+    "status": "open",
+    "failure_type": "unknown",
+    "service": "",
+    "log_entries": [],
+    "rca_findings": [],
+    "remediation_steps": [],
+    "jira_ticket": null,
+    "agent_results": [],
+    "audit_trail": [
+      "[INC-A0C1C46B] MonitoringAgent: confirmed=True, service=payment-service",
+      "[INC-A0C1C46B] LogAnalysisAgent: findings=3, patterns=['Memory exhaustion \u2014 container OOMKilled', 'Null pointer exception in application code', 'Deployment regression \u2014 readiness probe failure']",
+      "[INC-A0C1C46B] IncidentClassifierAgent: severity=critical, failure_type=service_crash, escalate=True, patterns=['Memory exhaustion \u2014 container OOMKilled', 'Null pointer exception in application code', 'Deployment regression \u2014 readiness probe failure']",
+      "[INC-A0C1C46B] JiraReportingAgent: ticket=AIOPS-EEDF4BF1, url=https://jira.example.com/browse/AIOPS-STUB"
+    ],
+    "created_at": "2026-04-04T22:11:51.048190Z",
+    "updated_at": "2026-04-04T22:11:51.048190Z",
+    "resolved_at": null
+  }
+]

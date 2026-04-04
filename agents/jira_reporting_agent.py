@@ -117,7 +117,7 @@ def jira_reporting_agent(state: AIOpsWorkflowState) -> dict[str, Any]:
         title=title,
         description=description,
         severity=Severity(severity),
-        status="Open" if final_status != IncidentStatus.RESOLVED.value else "Resolved",
+        status=final_status.replace('_', ' ').title(),
         labels=[service, state["failure_type"], severity, settings.jira_project_key],
         incident_id=incident_id,
         url=f"https://jira.example.com/browse/{settings.jira_project_key}-STUB",

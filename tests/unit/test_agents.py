@@ -13,6 +13,7 @@ from agents.log_analysis_agent import log_analysis_agent
 from agents.monitoring_agent import monitoring_agent
 from agents.remediation_agent import remediation_agent
 from agents.validation_agent import validation_agent
+from agents.jira_reporting_agent import jira_reporting_agent
 from app.schemas import IncidentStatus, Severity
 
 
@@ -128,3 +129,17 @@ class TestValidationAgent:
         }
         result = validation_agent(state)
         assert result["validation_passed"] is False
+
+
+class TestJiraReportingAgent:
+    def test_creates_ticket_with_correct_status(self, sample_initial_state: dict) -> None:
+        state = {**sample_initial_state, "final_status": IncidentStatus.RESOLVED.value}
+        result = jira_reporting_agent(state)
+        assert result["jira_ticket"]["status"] == "Resolved"
+        assert result["jira_ticket"]["incident_id"] == state["incident_id"]
+
+    def test_escalated_status_mapped_correctly(self, sample_initial_state: dict) -> None:
+        state = {**sample_initial_state, "final_status": IncidentStatus.ESCALATED.value}
+        result = jira_reporting_agent(state)
+        assert result["jira_ticket"]["status"] == "Escalated"
+        assert "jira_reporting_agent" in result["execution_path"]
