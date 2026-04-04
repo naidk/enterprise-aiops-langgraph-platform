@@ -1,205 +1,118 @@
-# Enterprise AIOps LangGraph Platform
+# Enterprise AIOps Platform 🛡️
 
-> Self-healing production infrastructure powered by a **multi-agent LangGraph pipeline**.  
-> Detects failures, classifies incidents, auto-remediates, validates recovery, and files Jira tickets — all autonomously.
+Our modern infrastructure scales rapidly, but the ability to actively identify, classify, and remediate production outages does not. Operations teams continuously face alert fatigue, heavily manual runbooks, disjointed troubleshooting toolchains, and delayed mean-time-to-recovery (MTTR) as service endpoints fail over the weekend.
 
----
+The **Enterprise AIOps Platform** solves this using advanced agentic orchestration. 
 
-## Architecture
-
-```
-Monitoring Event
-      │
-      ▼
-┌─────────────────────────────────────────────────────────┐
-│               LangGraph Agent Pipeline                  │
-│                                                         │
-│  monitoring_agent                                       │
-│    └─ log_analysis_agent                                │
-│         └─ incident_classifier_agent                    │
-│              │                                          │
-│    ┌─────────┴──────────────┐                           │
-│  [CRITICAL]              [HIGH/MEDIUM/LOW]              │
-│    │                        │                           │
-│  jira_reporting          remediation_agent              │
-│  (escalate)                 └─ validation_agent         │
-│                                   └─ jira_reporting     │
-└─────────────────────────────────────────────────────────┘
-      │
-      ▼
-  FastAPI REST API  ←→  Streamlit Dashboard
-```
-
-### Supported Failure Types
-
-| Failure Type | Severity | Auto-Remediated |
-|---|---|---|
-| `service_crash` | CRITICAL | No — escalated |
-| `bad_deployment` | HIGH | Yes — rollback |
-| `high_latency` | HIGH | Yes — scale + cache flush |
-| `db_connection_failure` | HIGH | Yes — failover + restart |
-| `failed_job` | MEDIUM | Yes — rerun |
+We utilize a Multi-Agent architecture driven by **LangGraph** to deploy completely autonomous engineering runbooks. When a system anomaly occurs, our platform detects it, spins up isolated containerized agents to analyze server logs, classifies the severity, automatically generates the fix, validates the recovery, and issues Jira tickets to DevOps engineers without human supervision.
 
 ---
 
-## Project Structure
+## 💼 The Business Problem
+1. **Downtime Costs Reputation**: Every minute an API Gateway is down, customer workflows freeze.
+2. **Alert Fatigue**: Ops Engineers drown in "P99 Latency High" monitor alerts with zero Root Cause context.
+3. **Reactive vs Proactive**: Most ops teams triage an incident *after* it begins escalating, forcing frantic searches across Datadog, Jira, and Kubernetes logs.
+
+### The Business Value
+Instead of paging a developer at 3 AM for a known Redis cache exhaustion, the AIOps platform dynamically acts as Level 1 and Level 2 support. It:
+* Shrinks **MTTD** (Mean Time To Detect) to milliseconds.
+* Drastically decreases **MTTR** (Mean Time To Recovery) using automated safe API rollbacks.
+* Generates pristine Root Case Analysis post-mortems for compliance auditing before the team even wakes up.
+
+---
+
+## 🧠 Architecture Explanation
+
+The backend operates on a decoupled RESTful layout built on Python 3.11:
+-   **API Framework**: FastAPI endpoints governing system state.
+-   **Agent Orchestration**: LangGraph driving stateful Multi-Agent transitions.
+-   **Frontend Board**: Streamlit Web UI pulling dynamic metrics.
+-   **Persistence**: Headless JSON stores for raw mock tracking.
+
+### 🕸️ LangGraph Multi-Agent Flow
+
+The lifecycle of an incident spins through up to 6 distinct agent roles via LangGraph cyclic routing:
+1. **Monitoring Agent**: Ingests payloads, filters out noise, confirms an active service issue.
+2. **Log Analysis Agent**: Searches local logs recursively for `OOMKilled` or `Query Timeout` patterns.
+3. **Incident Classifier**: Maps the incident. High-priority issues are marked `CRITICAL` allowing for immediate Escalation.
+4. **Remediation Agent**: Pulls dynamic runbook code and simulates the execution (e.g. restarts DB).
+5. **Validation Agent**: Re-queries the health endpoint. If it fails, loops back to Remediation.
+6. **Jira Reporting Agent**: Takes the full execution history and constructs an immutable audit log Jira Ticket.
+
+---
+
+## 📁 Folder Structure
 
 ```
 enterprise-aiops-langgraph-platform/
-├── app/
-│   ├── main.py              FastAPI application entry point
-│   ├── config.py            Environment-driven settings singleton
-│   ├── schemas.py           Pydantic domain schemas (Incident, Alert, Metrics…)
-│   ├── state.py             LangGraph TypedDict workflow state
-│   ├── logger.py            Structured JSON / text logging
-│   └── dependencies.py      FastAPI dependency injection providers
 │
-├── agents/
-│   ├── monitoring_agent.py          Detects and confirms failure events
-│   ├── log_analysis_agent.py        Parses logs, extracts RCA findings
-│   ├── incident_classifier_agent.py Classifies severity, decides escalation
-│   ├── remediation_agent.py         Builds and executes fix plans
-│   ├── validation_agent.py          Verifies service recovery
-│   └── jira_reporting_agent.py      Creates Jira-style incident tickets
+├── agents/             # The standalone LangGraph Agent logic
+├── app/                # Core FastAPI Server & Schema configuration
+├── dashboard/          # Streamlit UI
+├── graph/              # LangGraph Router logic mapping execution paths
+├── services/           # Backend persistence classes
+├── storage/            # Local JSON Data Mount point
+├── tests/              # 100% End-to-End Pytest execution suites
 │
-├── graph/
-│   ├── workflow.py          LangGraph StateGraph assembly and compilation
-│   └── router.py            Conditional edge routing functions
-│
-├── services/
-│   ├── pipeline_simulator.py  Generates realistic failure events for testing
-│   ├── health_service.py      Service health checks (HTTP + k8s)
-│   ├── incident_service.py    JSON-backed CRUD store for incidents
-│   ├── remediation_service.py Executes remediation steps (kubectl, Argo CD…)
-│   ├── validation_service.py  Post-remediation health assertions
-│   ├── metrics_service.py     Platform KPIs (MTTD, MTTR, success rate)
-│   └── jira_service.py        Jira REST API integration (stub + real)
-│
-├── storage/
-│   ├── incidents.json         Incident persistence (JSON array)
-│   ├── audit_log.json         Immutable audit trail (JSON array)
-│   └── metrics.json           Running KPI aggregates (JSON object)
-│
-├── dashboard/
-│   └── streamlit_app.py       5-page Streamlit dashboard
-│
-├── tests/
-│   ├── conftest.py            Shared fixtures
-│   ├── unit/                  Schema, agent, simulator unit tests
-│   ├── integration/           Full LangGraph pipeline tests
-│   └── regression/            IncidentService persistence tests
-│
-├── logs/                      Log file output directory
-├── requirements.txt
-├── pytest.ini
-├── Dockerfile
-└── .env.example
+├── .env.example        # Configuration hooks
+├── requirements.txt    # Frozen Python Dependencies
+└── Dockerfile          # Scalable Native Container
 ```
 
 ---
 
-## Quick Start
+## 🚀 Setup Steps
 
-### 1. Setup environment
-
+**1. Clone and Configure**
 ```bash
-cp .env.example .env
-# Edit .env — defaults work for demo mode (no API key required)
+git clone https://github.com/organization/enterprise-aiops-langgraph-platform.git
+cd enterprise-aiops-langgraph-platform
+python -m venv venv
+.\venv\Scripts\Activate.ps1
+```
+
+**2. Hydrate Environment**
+```bash
 pip install -r requirements.txt
+cp .env.example .env
 ```
 
-### 2. Run tests
+---
 
+## 💻 Running the Platform
+
+This is a distributed architecture. Open two separate terminal windows inside your Virtual Environment to trace both stacks!
+
+**1. Run the FastAPI Backend:**
 ```bash
-# All tests
-pytest
-
-# By category
-pytest tests/unit/         -v
-pytest tests/integration/  -v
-pytest tests/regression/   -v
+uvicorn app.main:app --port 8000
 ```
+*(Optionally view the backend Swagger UI at http://localhost:8000/docs)*
 
-### 3. Start FastAPI server
-
-```bash
-uvicorn app.main:app --reload --port 8000
-# Swagger UI: http://localhost:8000/docs
-```
-
-### 4. Start Streamlit dashboard
-
+**2. Run the Command Dashboard:**
 ```bash
 streamlit run dashboard/streamlit_app.py
-# Dashboard: http://localhost:8501
 ```
 
-### 5. Run with Docker
-
+**3. Run the complete Pytest Suite**
 ```bash
-docker build -t aiops-platform .
-docker run -p 8000:8000 --env-file .env aiops-platform
-
-# Streamlit
-docker run -p 8501:8501 aiops-platform \
-  streamlit run dashboard/streamlit_app.py --server.port 8501
+pytest tests/ -v
 ```
 
 ---
 
-## API Reference
+## 🎭 Demo Scenarios
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/health` | Liveness probe |
-| GET | `/docs` | Swagger UI |
-| POST | `/api/v1/pipeline/trigger` | Inject a failure scenario |
-| GET | `/api/v1/incidents` | List all incidents |
-| GET | `/api/v1/incidents/{id}` | Get single incident |
-| GET | `/api/v1/metrics` | Platform KPIs |
+Once both servers are running, access the Streamlit Dashboard at `http://localhost:8501`.
+Navigate to the **⚡ Pipeline Simulator** tab. You can execute multiple different edge cases:
+- Select **Database Connection Failure** to watch the system map to a Severity-Critical threshold, bypassing remediation for safety protocols and mapping straight to a red Jira Ticket.
+- Select **High Latency** to trace a successful safe-remediation runbook that auto-recovers the network.
 
-> Note: API routes are stubbed in Stage 1 — implementation in Stage 2.
+Jump over to the **📋 Audit Log** tab afterwards to watch the immutable Langgraph Agent logic trail tracking every LLM reasoning string!
 
 ---
 
-## Enabling a Real LLM
-
-Set in `.env`:
-```
-LLM_PROVIDER=anthropic
-ANTHROPIC_API_KEY=sk-ant-...
-LLM_MODEL=claude-sonnet-4-6
-```
-
-In `agents/nodes.py`, replace the `_call_llm()` stub with:
-```python
-from langchain_anthropic import ChatAnthropic
-from app.config import settings
-llm = ChatAnthropic(model=settings.llm_model, api_key=settings.anthropic_api_key)
-return llm.invoke(prompt).content
-```
-
----
-
-## Roadmap
-
-| Stage | Focus |
-|-------|-------|
-| **Stage 1** ✅ | Project structure, starters, schemas, agent stubs, LangGraph graph, tests |
-| **Stage 2** | Full agent logic with LLM, live k8s/Argo CD remediation, FastAPI routes |
-| **Stage 3** | SQLite persistence, async API, Slack/PagerDuty integration, real Jira |
-| **Stage 4** | Docker Compose (API + Dashboard + Prometheus), CI/CD, load testing |
-
----
-
-## Tech Stack
-
-| Component | Technology |
-|---|---|
-| Agent orchestration | LangGraph 1.1+ |
-| API framework | FastAPI 0.115+ |
-| Dashboard | Streamlit 1.41+ |
-| Data validation | Pydantic v2 |
-| Testing | Pytest 8+ with asyncio |
-| Containerisation | Docker (multi-stage) |
-| Language | Python 3.11+ |
+## 🔮 Future Enhancements
+*   Add Slack Webhook bindings inside the Jira Agent.
+*   Swap `LLM_PROVIDER=mock` inside `.env` to `anthropic` and wire dynamic LLM payload generation for `incident_classifier_agent`.
+*   Convert the persistence format from `json` to an asynchronous SQLite relational layer.
