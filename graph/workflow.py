@@ -78,7 +78,18 @@ def build_aiops_graph() -> StateGraph:
     )
 
     builder.add_edge("remediation_agent",   "validation_agent")
-    builder.add_edge("validation_agent",    "jira_reporting_agent")
+    
+    # Validation loopback router
+    from graph.router import route_after_validation
+    builder.add_conditional_edges(
+        "validation_agent",
+        route_after_validation,
+        {
+            "remediation_agent":    "remediation_agent",
+            "jira_reporting_agent": "jira_reporting_agent",
+        },
+    )
+
     builder.add_edge("jira_reporting_agent", END)
 
     logger.debug("AIOps graph topology built successfully.")
