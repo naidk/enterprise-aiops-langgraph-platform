@@ -20,7 +20,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from app.schemas import FailureType, Severity
+from app.schemas import FailureType, Severity, IncidentStatus
 from app.state import AIOpsWorkflowState
 
 logger = logging.getLogger(__name__)
@@ -96,7 +96,7 @@ def incident_classifier_agent(state: AIOpsWorkflowState) -> dict[str, Any]:
         f"escalate={should_escalate}, patterns={error_patterns}"
     )
 
-    return {
+    payload = {
         "severity": severity.value,
         "failure_category": failure_type,
         "classification_confidence": confidence,
@@ -105,6 +105,11 @@ def incident_classifier_agent(state: AIOpsWorkflowState) -> dict[str, Any]:
         "audit_trail": [audit],
         "execution_path": ["incident_classifier_agent"],
     }
+    
+    if should_escalate:
+        payload["final_status"] = IncidentStatus.ESCALATED.value
+        
+    return payload
 
 
 # ── Agent class ────────────────────────────────────────────────────────────────

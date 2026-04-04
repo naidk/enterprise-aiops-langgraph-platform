@@ -73,10 +73,14 @@ class TestWorkflowEndToEnd:
             state = _run(aiops_graph, ft)
             assert state["jira_ticket"] is not None, f"No Jira ticket for {ft}"
 
-    def test_audit_trail_is_non_empty(self, aiops_graph) -> None:
+    def test_database_failure_flow(self, aiops_graph) -> None:
+        """Database failures should be classified as critical and escalated, maintaining an audit trail."""
         state = _run(aiops_graph, "db_connection_failure")
+        assert state["severity"] == "critical"
+        assert state["escalate"] is True
+        assert state["final_status"] == IncidentStatus.ESCALATED.value
+        assert "jira_reporting_agent" in state["execution_path"]
         assert len(state["audit_trail"]) >= 3
-
     def test_agent_notes_accumulate_across_all_nodes(self, aiops_graph) -> None:
         state = _run(aiops_graph, "high_latency")
         # Expect at least one note per agent that ran
