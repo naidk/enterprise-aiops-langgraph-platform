@@ -1,0 +1,139 @@
+"""
+LangGraph shared state for the AIOps multi-agent workflow.
+
+AIOpsWorkflowState flows through every node in the graph:
+
+    START
+      │
+    monitoring_agent      ← detects failure, creates PipelineEvent
+      │
+    log_analysis_agent    ← parses logs, extracts patterns
+      │
+    incident_classifier   ← determines severity and failure type
+      │
+    remediation_agent     ← builds and executes remediation plan
+      │
+    validation_agent      ← verifies the fix worked
+      │
+    jira_reporting_agent  ← creates/updates Jira-style ticket
+      │
+    END
+
+Accumulating fields (Annotated with operator.add) are appended by
+each node rather than replaced, preserving the full audit trail.
+"""
+from __future__ import annotations
+
+import operator
+from typing import Annotated, Any, Optional, TypedDict
+
+
+class AIOpsWorkflowState(TypedDict):
+    """
+    Shared state flowing through all LangGraph agent nodes.
+
+    Initialisation:
+        Every field must be present in the seed dict passed to graph.invoke().
+        Use build_initial_state() to construct it correctly.
+    """
+
+    # ── Pipeline input ────────────────────────────────────────────────────────
+    incident_id: str               # Unique incident identifier
+    service: str                   # Affected service name
+    failure_type: str              # FailureType enum value
+    raw_event: dict[str, Any]      # Serialised PipelineEvent
+
+    # ── Monitoring agent outputs ──────────────────────────────────────────────
+    event_detected: bool           # Whether a real failure was confirmed
+    event_summary: str             # One-line summary of the detected event
+
+    # ── Log analysis outputs ──────────────────────────────────────────────────
+    log_entries: list[dict]        # Serialised LogEntry list
+    rca_findings: list[dict]       # Serialised RCAFinding list
+    error_patterns: list[str]      # Extracted error pattern strings
+
+    # ── Incident classifier outputs ───────────────────────────────────────────
+    severity: str                  # Severity enum value
+    failure_category: str          # Refined FailureType value
+    classification_confidence: float
+    escalate: bool                 # True → skip auto-remediation, page human
+
+    # ── Remediation agent outputs ─────────────────────────────────────────────
+    remediation_plan: list[dict]   # Serialised RemediationStep list
+    remediation_executed: bool
+    remediation_success: bool
+    remediation_attempts: int
+
+    # ── Validation agent outputs ──────────────────────────────────────────────
+    validation_passed: bool
+    validation_details: str
+    final_status: str              # IncidentStatus enum value
+
+    # ── Jira reporting outputs ────────────────────────────────────────────────
+    jira_ticket: Optional[dict]    # Serialised JiraTicket or None
+    jira_ticket_url: Optional[str]
+
+    # ── Accumulating fields (operator.add = list concatenation) ───────────────
+    agent_notes: Annotated[list[str], operator.add]   # All agent notes in order
+    audit_trail: Annotated[list[str], operator.add]   # Full audit chain
+    execution_path: Annotated[list[str], operator.add]  # Which nodes ran
+
+
+def build_initial_state(
+    incident_id: str,
+    service: str,
+    failure_type: str,
+    raw_event: dict[str, Any],
+) -> AIOpsWorkflowState:
+    """
+    Construct a fully-initialised seed state for a new workflow run.
+    All fields must be present for LangGraph to accept the state.
+
+    Args:
+        incident_id: Pre-generated incident ID (e.g. "INC-ABC12345").
+        service:     Name of the affected service.
+        failure_type: FailureType enum value string.
+        raw_event:   Serialised PipelineEvent dict.
+    """
+    return {
+        # Input
+        "incident_id": incident_id,
+        "service": service,
+        "failure_type": failure_type,
+        "raw_event": raw_event,
+
+        # Monitoring
+        "event_detected": False,
+        "event_summary": "",
+
+        # Log analysis
+        "log_entries": [],
+        "rca_findings": [],
+        "error_patterns": [],
+
+        # Classification
+        "severity": "unknown",
+        "failure_category": failure_type,
+        "classification_confidence": 0.0,
+        "escalate": False,
+
+        # Remediation
+        "remediation_plan": [],
+        "remediation_executed": False,
+        "remediation_success": False,
+        "remediation_attempts": 0,
+
+        # Validation
+        "validation_passed": False,
+        "validation_details": "",
+        "final_status": "open",
+
+        # Jira
+        "jira_ticket": None,
+        "jira_ticket_url": None,
+
+        # Accumulating
+        "agent_notes": [],
+        "audit_trail": [],
+        "execution_path": [],
+    }

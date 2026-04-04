@@ -1,0 +1,10 @@
+{
+  "total_incidents": 0,
+  "open_incidents": 0,
+  "resolved_incidents": 0,
+  "auto_remediated": 0,
+  "mttd_s": 0.0,
+  "mttr_s": 0.0,
+  "agent_success_rate": 0.0,
+  "last_updated": null
+}
