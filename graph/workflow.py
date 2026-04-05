@@ -44,6 +44,7 @@ from agents.validation_agent import validation_agent
 from agents.repo_inspection_agent import repo_inspection_agent
 from agents.test_analysis_agent import test_analysis_agent
 from agents.root_cause_agent import root_cause_agent
+from agents.code_fix_agent import code_fix_agent
 from app.state import AIOpsWorkflowState
 from graph.router import route_after_rca, route_after_validation
 
@@ -62,6 +63,7 @@ def build_aiops_graph() -> StateGraph:
     builder.add_node("repo_inspection_agent",     repo_inspection_agent)
     builder.add_node("test_analysis_agent",       test_analysis_agent)
     builder.add_node("root_cause_agent",          root_cause_agent)
+    builder.add_node("code_fix_agent",            code_fix_agent)
     builder.add_node("remediation_agent",         remediation_agent)
     builder.add_node("validation_agent",          validation_agent)
     builder.add_node("jira_reporting_agent",      jira_reporting_agent)
@@ -83,7 +85,9 @@ def build_aiops_graph() -> StateGraph:
         },
     )
 
-    builder.add_edge("remediation_agent",   "validation_agent")
+    # code_fix_agent runs in parallel path: after remediation, generate PR fix
+    builder.add_edge("remediation_agent",   "code_fix_agent")
+    builder.add_edge("code_fix_agent",      "validation_agent")
     
     # ── Validation loopback routing ──────────────────────────────────────────
     builder.add_conditional_edges(

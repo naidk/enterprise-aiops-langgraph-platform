@@ -90,6 +90,12 @@ class AIOpsWorkflowState(TypedDict):
     validation_details: str
     final_status: str              # IncidentStatus enum value (e.g. "resolved")
 
+    # ── Code fix agent outputs ────────────────────────────────────────────────
+    code_fix: Optional[dict[str, Any]]     # LLM-generated code fix + PR URL
+
+    # ── Injected logs (from crash injection) ──────────────────────────────────
+    injected_logs: Optional[str]           # Real crash logs from failure injector
+
     # ── Jira reporting outputs ────────────────────────────────────────────────
     jira_ticket: Optional[JiraTicketDict]  # Serialised JiraTicket or None
     jira_ticket_url: Optional[str]
@@ -150,6 +156,10 @@ def build_initial_state(
         "validation_passed": False,
         "validation_details": "",
         "final_status": "open",
+
+        # Code fix
+        "code_fix": None,
+        "injected_logs": None,
 
         # Jira
         "jira_ticket": None,
