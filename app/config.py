@@ -128,6 +128,10 @@ class Settings:
     aws_cloudwatch_namespace: str = field(default_factory=lambda: _env("AWS_CLOUDWATCH_NAMESPACE", "AWS/ECS"))
     aws_rds_cluster_id: str = field(default_factory=lambda: _env("AWS_RDS_CLUSTER_ID", ""))
 
+    # ── GitHub Integration ────────────────────────────────────────────────────
+    github_token: str = field(default_factory=lambda: _env("GITHUB_TOKEN", ""))
+    github_repo: str = field(default_factory=lambda: _env("GITHUB_REPO", "naidk/enterprise-aiops-langgraph-platform"))
+
     # ── Derived properties ────────────────────────────────────────────────────
 
     @property

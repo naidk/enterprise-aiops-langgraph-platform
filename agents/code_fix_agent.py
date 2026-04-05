@@ -19,6 +19,13 @@ from app.state import AIOpsWorkflowState
 from app.llm_factory import get_llm
 from app.config import settings
 
+# Load .env explicitly so os.getenv works even outside pydantic context
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except Exception:
+    pass
+
 logger = logging.getLogger(__name__)
 
 
@@ -74,8 +81,8 @@ def code_fix_agent(state: AIOpsWorkflowState) -> dict[str, Any]:
     # ── 5. Create GitHub PR ───────────────────────────────────────────────────
     pr_url = None
     pr_status = "skipped"
-    github_token = os.getenv("GITHUB_TOKEN", "")
-    github_repo  = os.getenv("GITHUB_REPO", "naidk/enterprise-aiops-langgraph-platform")
+    github_token = settings.github_token or os.getenv("GITHUB_TOKEN", "")
+    github_repo  = settings.github_repo or os.getenv("GITHUB_REPO", "naidk/enterprise-aiops-langgraph-platform")
 
     if github_token and fix_result.get("fixed_code") and fix_result.get("has_real_fix"):
         pr_url, pr_status = _create_github_pr(
