@@ -2,11 +2,11 @@
 # NEVER commit terraform.tfvars to GitHub
 
 aws_region     = "us-east-1"
-aws_access_key = "YOUR_ACCESS_KEY_HERE"
-aws_secret_key = "YOUR_SECRET_KEY_HERE"
+aws_access_key = "PASTE_YOUR_ACCESS_KEY_HERE"
+aws_secret_key = "PASTE_YOUR_SECRET_KEY_HERE"
 
 instance_type   = "t2.micro"
-public_key_path = "~/.ssh/id_rsa.pub"
+public_key_path = "~/.ssh/aiops-deploy.pub"
 github_repo     = "https://github.com/naidk/enterprise-aiops-langgraph-platform"
 
 # LLM: use "mock" for free demo, "groq" for real AI
