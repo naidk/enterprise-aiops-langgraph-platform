@@ -1,0 +1,126 @@
+name: Enterprise AIOps — CI/CD Pipeline
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # ── Job 1: Run All Tests ───────────────────────────────────────────────────
+  test:
+    name: Run Test Suite (52 tests)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run unit tests
+        run: pytest tests/unit/ -v --tb=short
+        env:
+          LLM_PROVIDER: mock
+          DRY_RUN_MODE: "true"
+          ENVIRONMENT: test
+
+      - name: Run integration tests
+        run: pytest tests/integration/ -v --tb=short
+        env:
+          LLM_PROVIDER: mock
+          DRY_RUN_MODE: "true"
+          ENVIRONMENT: test
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: test_output.txt
+          retention-days: 7
+
+  # ── Job 2: Deploy to EC2 (only on main branch, only if tests pass) ─────────
+  deploy:
+    name: Deploy to AWS EC2
+    runs-on: ubuntu-latest
+    needs: test                   # only runs if test job succeeds
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Deploy to EC2 via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ubuntu
+          key: ${{ secrets.EC2_SSH_KEY }}
+          timeout: 120s
+          script: |
+            set -e
+            echo "=== Starting deployment: $(date) ==="
+
+            cd /home/ubuntu/aiops-platform
+
+            # Save current commit for rollback
+            PREVIOUS_COMMIT=$(git rev-parse HEAD)
+            echo "Previous commit: $PREVIOUS_COMMIT"
+
+            # Pull latest code
+            git fetch origin main
+            git reset --hard origin/main
+
+            # Install any new dependencies
+            source venv/bin/activate
+            pip install -r requirements.txt --quiet
+
+            # Run quick smoke test on server
+            python -m pytest tests/unit/ -q --tb=no 2>&1 | tail -5
+
+            # Restart services
+            sudo systemctl restart aiops-api
+            sudo systemctl restart aiops-dashboard
+
+            # Wait and verify health
+            sleep 10
+            curl -sf http://localhost:8000/api/v1/health > /dev/null && echo "HEALTH CHECK PASSED" || (
+              echo "HEALTH CHECK FAILED — rolling back to $PREVIOUS_COMMIT"
+              git reset --hard $PREVIOUS_COMMIT
+              pip install -r requirements.txt --quiet
+              sudo systemctl restart aiops-api
+              sudo systemctl restart aiops-dashboard
+              exit 1
+            )
+
+            echo "=== Deployment complete: $(date) ==="
+
+  # ── Job 3: Notify on failure ───────────────────────────────────────────────
+  notify-failure:
+    name: Notify on Pipeline Failure
+    runs-on: ubuntu-latest
+    needs: [test, deploy]
+    if: failure()
+
+    steps:
+      - name: Pipeline failed notification
+        run: |
+          echo "Pipeline FAILED on branch ${{ github.ref }}"
+          echo "Commit: ${{ github.sha }}"
+          echo "Author: ${{ github.actor }}"
+          echo "Check: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
