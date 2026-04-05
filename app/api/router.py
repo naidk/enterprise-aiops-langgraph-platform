@@ -291,6 +291,9 @@ async def simulate_commit_crash(
                 "rollback" in str(s).lower() for s in remediation
             ),
             "developer_notified": True,
+            "pr_url": result.get("code_fix", {}).get("pr_url") if result.get("code_fix") else None,
+            "pr_status": result.get("code_fix", {}).get("pr_status") if result.get("code_fix") else None,
+            "llm_code_fix": result.get("code_fix", {}).get("llm_fix", "") if result.get("code_fix") else "",
         },
         "jira_ticket": result.get("jira_ticket", {}).get("ticket_id") if result.get("jira_ticket") else "Auto-created",
     }
