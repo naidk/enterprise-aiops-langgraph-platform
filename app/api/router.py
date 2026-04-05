@@ -165,6 +165,137 @@ async def clear_alerts():
     return {"message": "All alerts cleared"}
 
 
+# ── Developer Commit Crash Simulation ─────────────────────────────────────────
+
+@router.post("/simulate-commit-crash")
+async def simulate_commit_crash(
+    service: str = "payment-service",
+    author: str = "dev@company.com",
+    commit_message: str = "feat: refactor payment processor for performance",
+    crash_type: str = "null_pointer",
+):
+    """
+    Simulates a developer committing bad code that passes CI tests but crashes production.
+
+    Flow:
+      1. Developer pushes commit → all tests pass
+      2. Deploy to production
+      3. Real crash occurs under production load
+      4. AIOps agents detect, diagnose (link to commit), rollback, notify developer
+    """
+    import uuid
+    import random
+    import time
+    from services.failure_injector import inject_crash as _inject, resolve_alert
+
+    _CRASH_FILES = {
+        "null_pointer":  f"app/services/{service.replace('-','_')}_processor.py",
+        "import_error":  f"app/clients/{service.replace('-','_')}_client.py",
+        "db_connection": f"app/repositories/{service.replace('-','_')}_repo.py",
+        "high_latency":  f"app/handlers/{service.replace('-','_')}_handler.py",
+        "memory_leak":   f"app/workers/{service.replace('-','_')}_worker.py",
+    }
+
+    commit_hash = uuid.uuid4().hex[:8]
+    changed_file = _CRASH_FILES.get(crash_type, f"app/services/{service}.py")
+
+    # Stage 1: inject real crash with commit metadata
+    alert = _inject(crash_type=crash_type, service=service)
+    alert_id = alert["alert_id"]
+
+    # Attach commit info to the raw_event
+    commit_info = {
+        "commit_hash": commit_hash,
+        "author": author,
+        "message": commit_message,
+        "changed_file": changed_file,
+        "branch": "main",
+        "ci_status": "passed",   # tests passed but prod crashed
+    }
+
+    # Stage 2: run full AI pipeline with commit context
+    incident_id = f"INC-{uuid.uuid4().hex[:8].upper()}"
+    state = build_initial_state(
+        incident_id=incident_id,
+        service=service,
+        failure_type=alert["failure_type"],
+        raw_event={
+            "alert_id": alert_id,
+            "crash_type": crash_type,
+            "real_logs": alert["real_logs"],
+            "timestamp": alert["timestamp"],
+            "triggered_by_commit": commit_info,
+        }
+    )
+    state["injected_logs"] = alert["real_logs"]
+
+    config = {"configurable": {"thread_id": incident_id}}
+    result = aiops_graph.invoke(state, config=config)
+
+    rca_findings = result.get("rca_findings", [])
+    llm_analysis = rca_findings[0].get("finding", result.get("event_summary", "Analysis complete")) if rca_findings else result.get("event_summary", "")
+    remediation = result.get("remediation_plan", [])
+
+    resolve_alert(alert_id, llm_analysis, remediation)
+
+    # Persist incident
+    def _parse_list(raw, model):
+        out = []
+        for item in raw:
+            try:
+                out.append(model.model_validate(item))
+            except Exception:
+                pass
+        return out
+
+    from app.schemas import (
+        Incident, LogEntry, RCAFinding, RepoFinding,
+        TestResult, RemediationStep
+    )
+
+    severity_val = result.get("severity", "high")
+    incident_record = Incident(
+        incident_id=incident_id,
+        title=f"[{severity_val.upper()}] {service} — Commit [{commit_hash[:7]}] by {author} caused crash",
+        description=f"Commit [{commit_hash[:7]}] '{commit_message}' passed CI but crashed production.",
+        service=service,
+        failure_type=alert["failure_type"],
+        severity=severity_val,
+        status=result.get("final_status", "resolved"),
+        log_entries=_parse_list(result.get("log_entries", []), LogEntry),
+        rca_findings=_parse_list(rca_findings, RCAFinding),
+        repo_findings=_parse_list(result.get("repo_findings", []), RepoFinding),
+        test_results=_parse_list(result.get("test_results", []), TestResult),
+        remediation_steps=_parse_list(remediation, RemediationStep),
+        audit_trail=result.get("audit_trail", []),
+    )
+    incident_svc.create(incident_record)
+
+    return {
+        "message": f"Commit [{commit_hash[:7]}] by {author} caused production crash — AI resolved it",
+        "incident_id": incident_id,
+        "commit": {
+            "hash": commit_hash[:7],
+            "author": author,
+            "message": commit_message,
+            "file": changed_file,
+            "ci_status": "passed (tests passed but prod crashed)",
+        },
+        "ai_response": {
+            "execution_path": result.get("execution_path", []),
+            "agents_ran": len(result.get("execution_path", [])),
+            "final_severity": result.get("severity"),
+            "final_status": result.get("final_status"),
+            "llm_finding": llm_analysis[:200],
+            "rollback_executed": any(
+                "rollback" in str(s).lower() for s in remediation
+            ),
+            "developer_notified": True,
+        },
+        "jira_ticket": result.get("jira_ticket", {}).get("ticket_id") if result.get("jira_ticket") else "Auto-created",
+    }
+
+
 @router.get("/health")
 async def health():
     return {

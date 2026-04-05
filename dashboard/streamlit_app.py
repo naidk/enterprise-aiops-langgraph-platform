@@ -255,7 +255,79 @@ def page_live_alerts() -> None:
     else:
         st.info("Resolved alerts will appear here after AI analysis completes.")
 
-    # Reset button
+    st.divider()
+
+    # ── Developer Commit Crash Simulator ─────────────────────────────────────
+    st.subheader("🧑‍💻 Simulate: Developer Commit Crashes Production")
+    st.markdown(
+        "Simulates a developer pushing code that **passes all CI tests** "
+        "but **crashes in production** under real load. Watch the agents detect, "
+        "link the crash to the commit, rollback, and notify the developer."
+    )
+
+    with st.form("commit_crash_form"):
+        dc1, dc2 = st.columns(2)
+        with dc1:
+            dev_service = st.selectbox("Service", [
+                "payment-service", "auth-service", "order-service",
+                "inventory-service", "user-service", "notification-service"
+            ])
+            dev_author = st.text_input("Developer Email", value="dev@company.com")
+        with dc2:
+            dev_crash = st.selectbox("Crash Type", list(crash_options.keys()),
+                                     format_func=lambda x: crash_options[x])
+            dev_message = st.text_input("Commit Message", value="feat: refactor payment processor for performance")
+
+        commit_btn = st.form_submit_button("🚀 Push Commit → Deploy → Crash → AI Fix", type="primary", use_container_width=True)
+
+    if commit_btn:
+        with st.spinner(f"Simulating: {dev_author} pushed to {dev_service}... CI passed... deploying... CRASH DETECTED... AI analyzing..."):
+            try:
+                resp = requests.post(
+                    f"{API_BASE_URL}/simulate-commit-crash",
+                    params={
+                        "service": dev_service,
+                        "author": dev_author,
+                        "commit_message": dev_message,
+                        "crash_type": dev_crash,
+                    },
+                    timeout=60,
+                )
+                data = resp.json()
+            except Exception as e:
+                data = {"error": str(e)}
+
+        if "error" not in data:
+            commit = data.get("commit", {})
+            ai = data.get("ai_response", {})
+
+            st.error(f"💥 Production CRASHED after commit `[{commit.get('hash')}]` by `{commit.get('author')}`")
+
+            col1, col2 = st.columns(2)
+            with col1:
+                st.markdown("**📦 Commit Details:**")
+                st.code(
+                    f"Commit:  [{commit.get('hash')}]\n"
+                    f"Author:  {commit.get('author')}\n"
+                    f"Message: {commit.get('message')}\n"
+                    f"File:    {commit.get('file')}\n"
+                    f"CI:      {commit.get('ci_status')}",
+                    language="text"
+                )
+            with col2:
+                st.markdown("**🤖 AI Response:**")
+                m1, m2, m3 = st.columns(3)
+                m1.metric("Agents", ai.get("agents_ran", 0))
+                m2.metric("Severity", (ai.get("final_severity") or "—").upper())
+                m3.metric("Status", (ai.get("final_status") or "—").upper())
+
+            st.success(f"✅ Rollback executed: `{ai.get('rollback_executed')}` | Developer notified: `{ai.get('developer_notified')}`")
+            st.info(f"🤖 LLM Finding: {ai.get('llm_finding', '')}")
+            st.caption(f"Agents ran: {' → '.join(ai.get('execution_path', []))}")
+            st.rerun()
+        else:
+            st.error(f"Failed: {data['error']}")
+
     st.divider()
     if st.button("🔄 Reset All Alerts (Demo Reset)", use_container_width=True):
         clear_alerts()
