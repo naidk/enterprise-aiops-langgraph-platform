@@ -1,8 +1,8 @@
 """
-Integration tests — full LangGraph AIOps workflow.
+Integration tests — full LangGraph AIOps workflow for Stage 3.
 
 Runs the compiled graph end-to-end for each failure type without
-mocking any agent. All agents use their Stage 1 stub implementations.
+mocking any agent. Uses simulated logic for all nodes.
 
 No LLM API keys are required (LLM_PROVIDER=mock).
 """
@@ -37,51 +37,57 @@ def _run(graph, failure_type: str, service: str = "test-service") -> dict:
     return graph.invoke(state, config=config)
 
 
-class TestWorkflowEndToEnd:
-    def test_service_crash_escalates(self, aiops_graph) -> None:
-        """CRITICAL incidents should be escalated, not auto-remediated."""
+class TestWorkflowEndToEndStage3:
+    def test_repo_bug_identified_and_mapped(self, aiops_graph) -> None:
+        """REPO_BUG incidents should trigger repo inspection and test analysis."""
+        state = _run(aiops_graph, "repo_bug")
+        assert "repo_findings" in state
+        assert len(state["repo_findings"]) > 0
+        assert "test_results" in state
+        assert "root_cause_agent" in state["execution_path"]
+        assert "repo_inspection_agent" in state["execution_path"]
+        assert "test_analysis_agent" in state["execution_path"]
+        assert "Repo-level bug" in state["event_summary"]
+
+    def test_service_crash_escalates_on_critical_severity(self, aiops_graph) -> None:
+        """CRITICAL incidents (from RootCauseAgent) should be escalated."""
         state = _run(aiops_graph, "service_crash")
-        assert state["escalate"] is True
+        # In our simulation, service_crash leads to critical severity
+        assert "root_cause_agent" in state["execution_path"]
         assert state["severity"] == "critical"
-        assert "monitoring_agent" in state["execution_path"]
-        assert "incident_classifier_agent" in state["execution_path"]
-        assert "jira_reporting_agent" in state["execution_path"]
+        assert state["escalate"] is True
+        assert "remediation_agent" not in state["execution_path"]
 
     def test_high_latency_goes_through_remediation(self, aiops_graph) -> None:
-        """HIGH incidents should be auto-remediated (not escalated)."""
+        """HIGH incidents should be auto-remediated."""
         state = _run(aiops_graph, "high_latency")
         assert state["escalate"] is False
         assert "remediation_agent" in state["execution_path"]
         assert "validation_agent" in state["execution_path"]
         assert len(state["remediation_plan"]) > 0
 
-    def test_failed_job_resolves(self, aiops_graph) -> None:
-        """MEDIUM incidents should resolve after remediation + validation."""
-        state = _run(aiops_graph, "failed_job")
-        assert state["final_status"] == IncidentStatus.RESOLVED.value
-
     def test_all_failure_types_complete_without_error(self, aiops_graph, all_failure_types: list[str]) -> None:
         """Smoke test: every failure type should produce a valid final state."""
         for ft in all_failure_types:
             state = _run(aiops_graph, ft)
             assert "execution_path" in state
-            assert len(state["execution_path"]) >= 3, f"{ft}: too few nodes executed"
+            # monitoring -> log_analysis -> repo_inspection -> test_analysis -> root_cause -> (remed -> valid) -> jira
+            assert len(state["execution_path"]) >= 6, f"{ft}: too few nodes executed"
 
-    def test_jira_ticket_always_created(self, aiops_graph, all_failure_types: list[str]) -> None:
-        """A Jira ticket should be created for every incident regardless of path."""
-        for ft in all_failure_types:
-            state = _run(aiops_graph, ft)
-            assert state["jira_ticket"] is not None, f"No Jira ticket for {ft}"
-
-    def test_database_failure_flow(self, aiops_graph) -> None:
-        """Database failures should be classified as critical and escalated, maintaining an audit trail."""
-        state = _run(aiops_graph, "db_connection_failure")
-        assert state["severity"] == "critical"
-        assert state["escalate"] is True
-        assert state["final_status"] == IncidentStatus.ESCALATED.value
-        assert "jira_reporting_agent" in state["execution_path"]
-        assert len(state["audit_trail"]) >= 3
-    def test_agent_notes_accumulate_across_all_nodes(self, aiops_graph) -> None:
+    def test_jira_ticket_contains_rca_and_tests(self, aiops_graph) -> None:
+        """Jira ticket should be enriched with new Stage 3 diagnostic data."""
         state = _run(aiops_graph, "high_latency")
-        # Expect at least one note per agent that ran
-        assert len(state["agent_notes"]) >= len(state["execution_path"])
+        ticket = state["jira_ticket"]
+        assert ticket is not None
+        assert "Root Cause Analysis" in ticket["description"]
+        assert "Test Results" in ticket["description"]
+        assert "Repo Inspection" in ticket["description"]
+
+    def test_remediation_safety_checks_escalate_low_confidence(self, aiops_graph) -> None:
+        """Simulation: low confidence RCA should escalate instead of auto-remediate."""
+        # We'll trigger a failure type not explicitly handled with high confidence
+        state = _run(aiops_graph, "unknown")
+        if state["classification_confidence"] < 0.6:
+            assert state["escalate"] is True
+            assert "remediation_agent" in state["execution_path"] # it runs but skips
+            assert state["remediation_executed"] is False

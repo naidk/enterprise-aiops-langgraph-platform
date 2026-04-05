@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from app.config import settings
 from app.state import AIOpsWorkflowState
 
 logger = logging.getLogger(__name__)
@@ -44,22 +45,97 @@ def monitoring_agent(state: AIOpsWorkflowState) -> dict[str, Any]:
 
     logger.info("MonitoringAgent: processing event for %s [%s]", service, failure_type)
 
-    # TODO Stage 2: call health_service and metrics_service
-    # health = health_service.check(service)
-    # metrics = metrics_service.snapshot(service)
-    # confirmed = health.status != "healthy"
-
-    # Stub: always confirm the event for now
+    # Simulate detailed detection logic
     confirmed = True
-    summary = (
-        f"[MONITORING] Event confirmed on '{service}': "
-        f"failure_type={failure_type}, "
-        f"event_id={raw_event.get('event_id', 'N/A')}. "
-        f"Service health check: DEGRADED."
-    )
+    if failure_type == "repo_bug":
+        summary = f"Detected Repo-level bug in {service.upper()} — application module failing to initialize (ImportError)."
+    elif failure_type == "service_crash":
+        summary = f"Detected service crash in {service.upper()} — 100% of pods unavailable / health check failed."
+    elif failure_type == "high_latency":
+        summary = f"Detected high latency in {service.upper()} — P99 latency is 4200ms (SLA: 500ms)."
+    elif failure_type == "db_connection_failure":
+        summary = f"Detected database connection failure for {service.upper()} — connection pool exhausted."
+    else:
+        summary = f"Detected anomaly in {service.upper()} [Type: {failure_type}]."
 
-    note = f"MonitoringAgent completed — event_detected={confirmed}"
-    audit = f"[{incident_id}] MonitoringAgent: confirmed={confirmed}, service={service}"
+    # Stage 4: real health check in live mode
+    if not settings.dry_run_mode:
+        if settings.using_aws:
+            # AWS mode: use ECS service health + CloudWatch alarms
+            try:
+                from services.aws.boto_client import BotoClientFactory  # local import
+                from services.aws.cloudwatch_health import CloudWatchHealthChecker  # local import
+
+                factory = BotoClientFactory(
+                    region=settings.aws_region,
+                    aws_access_key_id=settings.aws_access_key_id,
+                    aws_secret_access_key=settings.aws_secret_access_key,
+                    aws_session_token=settings.aws_session_token,
+                    role_arn=settings.aws_role_arn,
+                )
+                checker = CloudWatchHealthChecker(factory, ecs_cluster=settings.aws_ecs_cluster)
+
+                ecs_health = checker.check_ecs_service_health(service)
+                alarm_health = checker.check_service_alarms(service)
+
+                running = ecs_health.get("running_count", 0)
+                desired = ecs_health.get("desired_count", 0)
+                ecs_healthy = ecs_health.get("healthy", True)
+                in_alarm = alarm_health.get("in_alarm", 0)
+
+                if not ecs_healthy:
+                    confirmed = True
+                    summary += (
+                        f" [ECS: running={running}/{desired} — service degraded]"
+                    )
+                elif in_alarm > 0:
+                    confirmed = True
+                    alarm_names = [a["name"] for a in alarm_health.get("alarms", []) if a.get("state") == "ALARM"]
+                    summary += (
+                        f" [CloudWatch: {in_alarm} alarm(s) in ALARM — {', '.join(alarm_names[:3])}]"
+                    )
+                else:
+                    confirmed = False
+                    summary += f" [AWS: ECS healthy (running={running}/{desired}), no alarms]"
+
+                logger.info(
+                    "MonitoringAgent: AWS health check for '%s' → ecs_healthy=%s in_alarm=%d confirmed=%s",
+                    service, ecs_healthy, in_alarm, confirmed,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "MonitoringAgent: AWS health check failed for '%s' — %s (using simulated confirmation)",
+                    service, exc,
+                )
+        else:
+            # Default: HTTP health check
+            try:
+                from services.health_service import HealthService  # local import
+                real_health = HealthService(
+                    base_url_pattern=settings.health_check_base_url,
+                    health_path=settings.health_check_path,
+                    timeout_seconds=settings.health_check_timeout_seconds,
+                ).check(service)
+                # A healthy response means the alert may have self-resolved
+                confirmed = not real_health.is_healthy
+                if real_health.endpoint_url:
+                    summary += (
+                        f" [Real health check: status={real_health.status}, "
+                        f"http={real_health.http_status_code}, "
+                        f"url={real_health.endpoint_url}]"
+                    )
+                logger.info(
+                    "MonitoringAgent: real health check for '%s' → status=%s, confirmed=%s",
+                    service, real_health.status, confirmed,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "MonitoringAgent: real health check failed for '%s' — %s (using simulated confirmation)",
+                    service, exc,
+                )
+
+    note = f"MonitoringAgent: confirmation={confirmed}, summary='{summary}'"
+    audit = f"[{incident_id}] MonitoringAgent: confirmed={confirmed}, service={service}, failure_type={failure_type}"
 
     return {
         "event_detected": confirmed,

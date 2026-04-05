@@ -2,15 +2,9 @@
 Log Analysis Agent — second node in the AIOps LangGraph pipeline.
 
 Responsibility:
-    Retrieve and parse recent log entries for the affected service.
-    Extract error patterns, stack traces, and correlate with known failure signatures.
-    Produce RCAFinding objects for the Incident Classifier to score.
-
-Stage 2 implementation will:
-    - Query Elasticsearch / Loki / CloudWatch Logs for recent ERROR/FATAL lines
-    - Use LLM to extract structured findings from unstructured log text
-    - Implement pattern matching against a known failure signature library
-    - Correlate log timestamps with recent deployments and metric spikes
+    - Retrieve and parse recent log entries for the affected service.
+    - Extract error patterns and signatures using LLM inference (Groq/Claude).
+    - Produce structured findings for the Root Cause Agent.
 """
 from __future__ import annotations
 
@@ -20,85 +14,109 @@ from typing import Any
 
 from app.schemas import LogEntry, RCAFinding
 from app.state import AIOpsWorkflowState
+from app.llm_factory import get_llm
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-# ── Known error patterns ───────────────────────────────────────────────────────
-# Stage 2: move these to a database / vector store for dynamic expansion
-
+# ── Known error patterns (Static fallback) ────────────────────────────────────
 _ERROR_PATTERNS: dict[str, str] = {
     r"OOMKill|memory limit exceeded":            "Memory exhaustion — container OOMKilled",
     r"connection refused|ECONNREFUSED":          "Dependency unreachable — connection refused",
     r"timeout|timed out":                        "Request/query timeout — downstream latency",
     r"NPE|NullPointerException|null pointer":    "Null pointer exception in application code",
-    r"deployment|rollout|readiness probe":       "Deployment regression — readiness probe failure",
-    r"disk full|no space left":                  "Disk space exhaustion",
-    r"deadlock|lock wait timeout":               "Database deadlock detected",
-    r"circuit breaker open":                     "Circuit breaker tripped — downstream overload",
+    r"ImportError|ModuleNotFoundError":          "Broken import — application dependency error",
 }
 
 
-def _match_patterns(log_text: str) -> list[str]:
-    """Extract all matching error pattern labels from a block of log text."""
-    matched: list[str] = []
-    for pattern, label in _ERROR_PATTERNS.items():
-        if re.search(pattern, log_text, re.IGNORECASE):
-            matched.append(label)
-    return matched
+def _detect_level(message: str) -> str:
+    """Classify a log message severity level from its text content."""
+    upper = message.upper()
+    if "ERROR" in upper or "FATAL" in upper:
+        return "ERROR"
+    if "WARN" in upper:
+        return "WARN"
+    return "INFO"
 
-
-# ── LangGraph node function ────────────────────────────────────────────────────
 
 def log_analysis_agent(state: AIOpsWorkflowState) -> dict[str, Any]:
     """
     LangGraph node: Log Analysis Agent.
 
-    Fetches and analyses logs for the affected service, then populates
-    log_entries, rca_findings, and error_patterns in the workflow state.
-
-    Args:
-        state: Current AIOpsWorkflowState.
-
-    Returns:
-        Partial state dict with log analysis results.
+    Analyses logs using real LLM inference if enabled, otherwise falls back to
+    pattern matching. When CLOUD_PROVIDER=aws is set, fetches real log messages
+    from CloudWatch Logs instead of using stubs.
     """
     incident_id = state["incident_id"]
     service = state["service"]
     failure_type = state["failure_type"]
 
-    logger.info("LogAnalysisAgent: analysing logs for %s", service)
+    logger.info("LogAnalysisAgent: analysing logs for %s (LLM: %s)", service, settings.llm_provider)
 
-    # TODO Stage 2: query real log source
-    # raw_logs = log_source.fetch(service=service, window_minutes=30, level="ERROR")
-    # log_entries = [LogEntry(**parse(line)) for line in raw_logs]
-
-    # Stub log entries representative of each failure type
+    # 1. Fetch Logs — real CloudWatch Logs if AWS mode is active, else stubs
     stub_messages = _generate_stub_logs(service, failure_type)
-    log_entries = [
-        LogEntry(service=service, level="ERROR", message=msg)
-        for msg in stub_messages
-    ]
+    log_entries = [LogEntry(service=service, level="ERROR", message=msg) for msg in stub_messages]
 
-    # Extract error patterns
-    combined_text = " ".join(stub_messages)
-    patterns = _match_patterns(combined_text)
+    if settings.using_aws:
+        try:
+            from services.aws.cloudwatch_logs import CloudWatchLogsClient  # local import
+            from services.aws.boto_client import BotoClientFactory  # local import
 
-    # Build RCA findings from matched patterns
-    findings: list[RCAFinding] = []
-    for pattern_label in patterns:
-        findings.append(
-            RCAFinding(
-                component=service,
-                finding=pattern_label,
-                confidence=0.75,   # TODO Stage 2: LLM-scored confidence
-                evidence=stub_messages[:2],
+            cw_logs_client = CloudWatchLogsClient(
+                BotoClientFactory(
+                    region=settings.aws_region,
+                    aws_access_key_id=settings.aws_access_key_id,
+                    aws_secret_access_key=settings.aws_secret_access_key,
+                    aws_session_token=settings.aws_session_token,
+                    role_arn=settings.aws_role_arn,
+                ),
+                log_group_prefix=settings.aws_log_group_prefix,
             )
-        )
+            real_logs = cw_logs_client.get_recent_logs(service, minutes=10, max_events=50)
+            if real_logs:
+                log_entries = [
+                    LogEntry(
+                        service=service,
+                        level=_detect_level(entry["message"]),
+                        message=entry["message"],
+                    )
+                    for entry in real_logs
+                ]
+                stub_messages = [e["message"] for e in real_logs]
+                logger.info(
+                    "LogAnalysisAgent: using %d real CloudWatch log entries for '%s'",
+                    len(log_entries), service,
+                )
+            else:
+                logger.info(
+                    "LogAnalysisAgent: no CloudWatch logs found for '%s' — using stubs",
+                    service,
+                )
+        except Exception as exc:
+            logger.warning(
+                "LogAnalysisAgent: CloudWatch Logs fetch failed for '%s' — %s; using stubs",
+                service, exc,
+            )
 
-    # TODO Stage 2: use LLM to generate additional findings from unstructured logs
+    # 2. Extract Findings (LLM vs Pattern Matching)
+    findings: list[RCAFinding] = []
+    patterns: list[str] = []
 
-    note = f"LogAnalysisAgent: {len(log_entries)} log entries, {len(findings)} RCA findings, patterns={patterns}"
-    audit = f"[{incident_id}] LogAnalysisAgent: findings={len(findings)}, patterns={patterns}"
+    if settings.using_real_llm:
+        findings, patterns = _llm_log_analysis(service, stub_messages)
+        # If LLM call failed or returned empty, fall back to static pattern matching
+        if not findings:
+            logger.info("LogAnalysisAgent: LLM returned no findings; using static pattern-matching fallback.")
+            patterns = _match_patterns(" ".join(stub_messages))
+            for p in patterns:
+                findings.append(RCAFinding(component=service, finding=p, confidence=0.7, evidence=stub_messages[:1]))
+    else:
+        patterns = _match_patterns(" ".join(stub_messages))
+        for p in patterns:
+            findings.append(RCAFinding(component=service, finding=p, confidence=0.7, evidence=stub_messages[:1]))
+
+    note = f"LogAnalysisAgent: {len(log_entries)} logs, {len(findings)} findings via {settings.llm_provider}"
+    audit = f"[{incident_id}] LogAnalysisAgent: patterns={patterns}"
 
     return {
         "log_entries": [e.model_dump(mode="json") for e in log_entries],
@@ -110,53 +128,49 @@ def log_analysis_agent(state: AIOpsWorkflowState) -> dict[str, Any]:
     }
 
 
+def _llm_log_analysis(service: str, logs: list[str]) -> tuple[list[RCAFinding], list[str]]:
+    """Use LLM to extract structured diagnostic findings from raw logs."""
+    try:
+        llm = get_llm()
+        
+        # Simple analysis prompt for the demo
+        prompt = (
+            f"Analyze the following logs for service '{service}'. "
+            "Identify the technical error signature and return a short summary finding. "
+            "Logs:\n" + "\n".join(logs)
+        )
+        
+        response = llm.invoke(prompt)
+        content = response.content if hasattr(response, "content") else str(response)
+        
+        # For the demo, we create a structured finding from the LLM's text
+        # in a real system, we'd use with_structured_output here too
+        finding = RCAFinding(
+            component=service,
+            finding=content[:200], # Summary from LLM
+            confidence=0.9,
+            evidence=logs[:2]
+        )
+        return [finding], ["LLM_IDENTIFIED"]
+    except Exception as e:
+        logger.error("LogAnalysisAgent: LLM analysis failed: %s", e)
+        return [], []
+
+
+def _match_patterns(log_text: str) -> list[str]:
+    """Extract all matching error pattern labels from a block of log text."""
+    matched: list[str] = []
+    for pattern, label in _ERROR_PATTERNS.items():
+        if re.search(pattern, log_text, re.IGNORECASE):
+            matched.append(label)
+    return matched
+
+
 def _generate_stub_logs(service: str, failure_type: str) -> list[str]:
-    """
-    Generate realistic stub log lines for a given failure type.
-    Used only in Stage 1 / mock mode — Stage 2 replaces with real log queries.
-    """
+    """Realistic stub logs for the demo."""
     _STUB_LOGS: dict[str, list[str]] = {
-        "service_crash": [
-            f"[FATAL] {service}: Unhandled exception — NullPointerException in WorkerThread",
-            f"[ERROR] {service}: OOMKill — container exceeded memory limit 2Gi",
-            f"[ERROR] {service}: Readiness probe failing /health — HTTP 503",
-        ],
-        "high_latency": [
-            f"[ERROR] {service}: Request timeout after 30s — downstream payment-gateway",
-            f"[WARN]  {service}: p99 latency 4200ms exceeds SLO threshold 500ms",
-            f"[ERROR] {service}: Circuit breaker open for auth-service",
-        ],
-        "db_connection_failure": [
-            f"[ERROR] {service}: Connection refused — postgresql:5432",
-            f"[ERROR] {service}: Database deadlock — lock wait timeout exceeded",
-            f"[WARN]  {service}: Connection pool exhausted — waiting threads: 47",
-        ],
-        "failed_job": [
-            f"[ERROR] {service}: Job execution failed — exit code 1",
-            f"[ERROR] {service}: timed out waiting for task queue response",
-            f"[WARN]  {service}: Retry attempt 3/3 failed",
-        ],
-        "bad_deployment": [
-            f"[ERROR] {service}: Deployment rollout stalled — readiness probe failure",
-            f"[ERROR] {service}: New version v2.3.1 crash-looping — OOMKilled",
-            f"[WARN]  {service}: Pod restartCount=5 in last 10 minutes",
-        ],
+        "service_crash": [f"[FATAL] {service}: NullPointerException in WorkerThread", f"[ERROR] {service}: OOMKill — limit 2Gi"],
+        "high_latency": [f"[ERROR] {service}: Request timeout after 30s", f"[WARN] p99 4200ms > 500ms"],
+        "repo_bug": [f"[FATAL] {service}: ImportError: cannot import name 'LegacyClient' from 'app.clients'"],
     }
-    return _STUB_LOGS.get(failure_type, [f"[ERROR] {service}: Unknown failure type: {failure_type}"])
-
-
-# ── Agent class ────────────────────────────────────────────────────────────────
-
-class LogAnalysisAgent:
-    """
-    Reusable log analysis agent class with configurable log source.
-    Stage 2 will inject a real log source (Elasticsearch, Loki, etc.)
-    """
-
-    def __init__(self, log_source=None, llm=None) -> None:
-        self._log_source = log_source   # TODO Stage 2
-        self._llm = llm                 # TODO Stage 2
-
-    def run_node(self, state: AIOpsWorkflowState) -> dict[str, Any]:
-        """Delegate to the module-level LangGraph node function."""
-        return log_analysis_agent(state)
+    return _STUB_LOGS.get(failure_type, [f"[ERROR] {service}: failure type {failure_type} observed."])

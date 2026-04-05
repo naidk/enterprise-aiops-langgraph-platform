@@ -56,6 +56,7 @@ class FailureType(str, Enum):
     DB_CONNECTION_FAILURE = "db_connection_failure"
     FAILED_JOB = "failed_job"
     BAD_DEPLOYMENT = "bad_deployment"
+    REPO_BUG = "repo_bug"
     UNKNOWN = "unknown"
 
 
@@ -114,6 +115,38 @@ class RCAFinding(BaseModel):
     evidence: list[str] = Field(default_factory=list)
 
 
+class RepoFinding(BaseModel):
+    """Static analysis finding from the repository inspection agent."""
+
+    file_path: str
+    issue_type: str = Field(..., description="broken_import | config_issue | dependency_problem | missing_env_var")
+    description: str
+    severity: str = "medium"
+    module: Optional[str] = None
+
+
+class TestResult(BaseModel):
+    """Result of a simulated test run."""
+
+    test_id: str = Field(default_factory=lambda: _new_id("TST"))
+    test_name: str
+    status: str = Field(..., description="PASS | FAIL | ERROR")
+    message: Optional[str] = None
+    module: Optional[str] = None
+    duration_ms: float = 0.0
+
+
+class RootCauseAnalysis(BaseModel):
+    """Final diagnostic output from the Root Cause Agent."""
+
+    predicted_root_cause: str
+    affected_module: str
+    severity: Severity = Severity.UNKNOWN
+    confidence: float = Field(..., ge=0.0, le=1.0)
+    suggested_remediation: str
+    evidence_ids: list[str] = Field(default_factory=list, description="IDs of logs, repo findings, or tests")
+
+
 class RemediationStep(BaseModel):
     """One actionable step in the remediation plan."""
 
@@ -169,6 +202,9 @@ class Incident(BaseModel):
     # Populated by agents
     log_entries: list[LogEntry] = Field(default_factory=list)
     rca_findings: list[RCAFinding] = Field(default_factory=list)
+    repo_findings: list[RepoFinding] = Field(default_factory=list)
+    test_results: list[TestResult] = Field(default_factory=list)
+    root_cause: Optional[RootCauseAnalysis] = None
     remediation_steps: list[RemediationStep] = Field(default_factory=list)
     jira_ticket: Optional[JiraTicket] = None
     agent_results: list[AgentResult] = Field(default_factory=list)

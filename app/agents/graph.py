@@ -1,4 +1,12 @@
 """
+DEPRECATED — Legacy Stage 1 graph assembly (app/agents/).
+
+This module is NOT used by the active AIOps pipeline.
+The live graph is compiled in:  graph/workflow.py  (aiops_graph)
+The live agent nodes are in:    agents/            (root-level package)
+
+This file is retained for reference only. Do NOT import aiops_graph from here.
+────────────────────────────────────────────────────────────────────────────────
 LangGraph graph assembly for the AIOps agent pipeline.
 
 Graph topology:

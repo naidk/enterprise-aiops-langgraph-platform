@@ -78,16 +78,16 @@ class TestIncident:
     def test_incident_id_auto_generated(self) -> None:
         from app.schemas import PipelineEvent
         event = PipelineEvent(service="svc", failure_type=FailureType.FAILED_JOB, message="x")
-        inc = Incident(alert=None, failure_type=FailureType.FAILED_JOB, service="svc")  # type: ignore
+        inc = Incident(failure_type=FailureType.FAILED_JOB, service="svc")
         assert inc.incident_id.startswith("INC-")
 
     def test_is_resolved_property(self) -> None:
-        inc = Incident(service="svc")  # type: ignore
+        inc = Incident(service="svc") 
         inc.status = IncidentStatus.RESOLVED
         assert inc.is_resolved is True
 
     def test_duration_seconds_none_when_not_resolved(self) -> None:
-        inc = Incident(service="svc")  # type: ignore
+        inc = Incident(service="svc") 
         assert inc.duration_seconds is None
 
 

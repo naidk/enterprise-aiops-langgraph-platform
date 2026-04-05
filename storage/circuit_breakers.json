@@ -1,0 +1,8 @@
+{
+  "test-service": {
+    "state": "closed",
+    "consecutive_failures": 0,
+    "opened_at": null,
+    "last_failure_at": null
+  }
+}

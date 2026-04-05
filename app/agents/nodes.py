@@ -1,4 +1,18 @@
 """
+DEPRECATED — Legacy Stage 1 node functions (app/agents/nodes.py).
+
+The active LangGraph nodes live in: agents/  (root-level package)
+  agents/monitoring_agent.py
+  agents/log_analysis_agent.py
+  agents/repo_inspection_agent.py
+  agents/test_analysis_agent.py
+  agents/root_cause_agent.py
+  agents/remediation_agent.py
+  agents/validation_agent.py
+  agents/jira_reporting_agent.py
+
+This file is retained for reference only.
+────────────────────────────────────────────────────────────────────────────────
 LangGraph node functions for the AIOps agent pipeline.
 
 Each function receives the full AIOpsState and returns a *partial* state dict

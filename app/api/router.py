@@ -8,7 +8,11 @@ import random
 from fastapi import APIRouter, HTTPException
 
 from app.config import settings
-from app.schemas import FailureType, Incident, PlatformMetrics, PipelineEvent
+from app.schemas import (
+    FailureType, Incident, PlatformMetrics, PipelineEvent,
+    LogEntry, RCAFinding, RepoFinding, TestResult,
+    RootCauseAnalysis, RemediationStep, JiraTicket, Severity, IncidentStatus,
+)
 from graph.workflow import aiops_graph
 from app.state import build_initial_state
 from services.incident_service import IncidentService
@@ -85,14 +89,59 @@ async def run_monitoring_cycle():
     config = {"configurable": {"thread_id": incident_id}}
     result = aiops_graph.invoke(state, config=config)
     
-    # 5. Persist Incident Result explicitly for tracking (simulating real hook)
+    # 5. Persist fully-enriched Incident record for tracking and API access.
+    # Parse each list[dict] field from state back into typed Pydantic models.
+    # model_validate handles datetime coercion and enum casting automatically.
+    def _parse_list(raw: list, model) -> list:
+        """Safely parse a list of dicts into Pydantic model instances."""
+        out = []
+        for item in raw:
+            try:
+                out.append(model.model_validate(item))
+            except Exception as exc:
+                logger.warning("Failed to parse %s item: %s", model.__name__, exc)
+        return out
+
+    log_entries = _parse_list(result.get("log_entries", []), LogEntry)
+    rca_findings = _parse_list(result.get("rca_findings", []), RCAFinding)
+    repo_findings = _parse_list(result.get("repo_findings", []), RepoFinding)
+    test_results = _parse_list(result.get("test_results", []), TestResult)
+    remediation_steps = _parse_list(result.get("remediation_plan", []), RemediationStep)
+
+    root_cause: RootCauseAnalysis | None = None
+    if result.get("root_cause"):
+        try:
+            root_cause = RootCauseAnalysis.model_validate(result["root_cause"])
+        except Exception as exc:
+            logger.warning("Failed to parse root_cause: %s", exc)
+
+    jira_ticket: JiraTicket | None = None
+    if result.get("jira_ticket"):
+        try:
+            jira_ticket = JiraTicket.model_validate(result["jira_ticket"])
+        except Exception as exc:
+            logger.warning("Failed to parse jira_ticket: %s", exc)
+
+    severity_val = result.get("severity", "unknown")
+    status_val = result.get("final_status", "open")
+    title = f"[{severity_val.upper()}] {event.service} — {event.failure_type.value.replace('_', ' ').title()}"
+
     incident_record = Incident(
         incident_id=incident_id,
+        title=title,
+        description=result.get("event_summary", f"Automated incident triggered by {event.failure_type.value}"),
         service=event.service,
         failure_type=event.failure_type,
-        severity=result.get("severity", "unknown"),
-        status=result.get("final_status", "open"),
-        audit_trail=result.get("audit_trail", [])
+        severity=severity_val,
+        status=status_val,
+        log_entries=log_entries,
+        rca_findings=rca_findings,
+        repo_findings=repo_findings,
+        test_results=test_results,
+        root_cause=root_cause,
+        remediation_steps=remediation_steps,
+        jira_ticket=jira_ticket,
+        audit_trail=result.get("audit_trail", []),
     )
     # Save the incident internally into JSON array
     incident_svc.create(incident_record)
@@ -126,14 +175,149 @@ async def get_logs():
 @router.get("/metrics", response_model=PlatformMetrics)
 async def get_metrics():
     """Extracts platform data directly from the Metrics service."""
-    # Fast calculate metrics from active JSON Incident Array if needed, 
+    # Fast calculate metrics from active JSON Incident Array if needed,
     # but the service inherently tracks it. Let's just return what's there.
     metrics = metrics_svc.get_platform_metrics()
-    
+
     # Enforce syncing incidents logic here dynamically since we lack real webhooks
     incidents = incident_svc.list_all()
     metrics.total_incidents = len(incidents)
     metrics.open_incidents = len([i for i in incidents if not i.is_resolved])
     metrics.resolved_incidents = len([i for i in incidents if i.is_resolved])
-    
+
     return metrics
+
+
+# ── Stage 4: Deployment & Circuit-Breaker Endpoints ───────────────────────────
+
+@router.post("/deployments/register")
+async def register_deployment(
+    service: str,
+    version: str,
+    image: str = "",
+    deployed_by: str = "api",
+):
+    """
+    Register a new deployment so the platform can roll back to the previous version.
+
+    Records the deployment in storage/deployments.json keyed by service name.
+    The previous deployment is automatically available as the rollback target.
+    """
+    from services.deployment_tracker import DeploymentTracker, DeploymentRecord
+    from datetime import datetime, timezone
+
+    tracker = DeploymentTracker(storage_path=settings.deployments_file)
+    record = DeploymentRecord(
+        service=service,
+        version=version,
+        image=image or f"{service}:{version}",
+        deployed_by=deployed_by,
+        deployed_at=datetime.now(timezone.utc).isoformat(),
+        is_stable=True,
+        rollback_command=f"kubectl rollout undo deployment/{service} -n production",
+    )
+    tracker.record_deployment(record)
+    previous = tracker.get_previous_version(service)
+
+    return {
+        "message": f"Deployment of '{service}' v{version} registered successfully.",
+        "service": service,
+        "version": version,
+        "rollback_target": previous.version if previous else None,
+    }
+
+
+@router.post("/rollback/{service}")
+async def manual_rollback(service: str):
+    """
+    Manually trigger a rollback for a service to its previous deployment.
+
+    Returns the rollback command, dry_run status, and whether execution succeeded.
+    In dry_run mode (default) the command is logged but not executed.
+    """
+    from services.deployment_tracker import DeploymentTracker
+    from services.execution_service import ExecutionService
+
+    tracker = DeploymentTracker(storage_path=settings.deployments_file)
+    exec_svc = ExecutionService(
+        dry_run=settings.dry_run_mode,
+        timeout_seconds=settings.execution_timeout_seconds,
+    )
+
+    # Ensure we have deployment history
+    tracker.seed_service(service)
+
+    rollback_cmd = tracker.get_rollback_command(service)
+    previous = tracker.get_previous_version(service)
+    current = tracker.get_current_version(service)
+
+    result = exec_svc.execute(rollback_cmd)
+
+    if result.success:
+        tracker.mark_unstable(service)
+
+    return {
+        "service": service,
+        "rollback_command": rollback_cmd,
+        "dry_run": result.dry_run,
+        "success": result.success,
+        "stdout": result.stdout,
+        "stderr": result.stderr,
+        "exit_code": result.exit_code,
+        "duration_ms": result.duration_ms,
+        "current_version": current.version if current else None,
+        "rollback_target_version": previous.version if previous else None,
+        "executed_at": result.executed_at,
+    }
+
+
+@router.get("/circuit-breakers")
+async def get_circuit_breakers():
+    """
+    View circuit breaker states for all tracked services.
+
+    Returns the raw circuit breaker data from storage.
+    """
+    from services.circuit_breaker import CircuitBreaker
+    import json
+    from pathlib import Path
+
+    cb = CircuitBreaker(
+        storage_path=settings.circuit_breaker_file,
+        failure_threshold=settings.circuit_breaker_failure_threshold,
+        recovery_timeout_minutes=settings.circuit_breaker_recovery_minutes,
+    )
+    data = cb._load()
+
+    return {
+        "circuit_breakers": data,
+        "failure_threshold": settings.circuit_breaker_failure_threshold,
+        "recovery_timeout_minutes": settings.circuit_breaker_recovery_minutes,
+    }
+
+
+@router.post("/circuit-breakers/{service}/reset")
+async def reset_circuit_breaker(service: str):
+    """
+    Manually reset a circuit breaker for a service.
+
+    Clears the failure count and sets the circuit back to 'closed' state,
+    allowing remediation to proceed for that service.
+    """
+    from services.circuit_breaker import CircuitBreaker
+
+    cb = CircuitBreaker(
+        storage_path=settings.circuit_breaker_file,
+        failure_threshold=settings.circuit_breaker_failure_threshold,
+        recovery_timeout_minutes=settings.circuit_breaker_recovery_minutes,
+    )
+    prev_state = cb.get_state(service)
+    cb.record_success(service)
+    new_state = cb.get_state(service)
+
+    return {
+        "service": service,
+        "previous_state": prev_state,
+        "new_state": new_state,
+        "message": f"Circuit breaker for '{service}' reset from '{prev_state}' to '{new_state}'.",
+    }

@@ -1,0 +1,22 @@
+{
+  "test-service": [
+    {
+      "service": "test-service",
+      "version": "1.9.0",
+      "image": "test-service:1.9.0",
+      "deployed_by": "seed",
+      "deployed_at": "2026-04-05T03:43:04.225176+00:00",
+      "is_stable": true,
+      "rollback_command": "kubectl rollout undo deployment/test-service -n production"
+    },
+    {
+      "service": "test-service",
+      "version": "2.0.0",
+      "image": "test-service:2.0.0",
+      "deployed_by": "seed",
+      "deployed_at": "2026-04-05T03:43:04.225176+00:00",
+      "is_stable": true,
+      "rollback_command": "kubectl rollout undo deployment/test-service -n production"
+    }
+  ]
+}

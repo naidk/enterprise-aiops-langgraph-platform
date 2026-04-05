@@ -70,6 +70,9 @@ app.add_middleware(
 from app.api.router import router as api_router
 app.include_router(api_router)
 
+from app.api.aws_router import router as aws_router
+app.include_router(aws_router)
+
 
 # ── Built-in endpoints ────────────────────────────────────────────────────────
 @app.get("/", include_in_schema=False)

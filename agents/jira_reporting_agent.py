@@ -61,6 +61,30 @@ def _build_ticket_description(state: AIOpsWorkflowState) -> str:
 
     lines += [
         "",
+        "*Repo Inspection:*",
+    ]
+    for r in state.get("repo_findings", []):
+        lines.append(f"- [{r.get('severity', 'med')}] {r.get('issue_type', '')}: {r.get('description', '')}")
+
+    lines += [
+        "",
+        "*Test Results:*",
+    ]
+    for t in state.get("test_results", []):
+        lines.append(f"- [{t.get('status', 'FAIL')}] {t.get('test_name', '')}: {t.get('message', 'N/A')}")
+
+    lines += [
+        "",
+        "*Root Cause Analysis:*",
+    ]
+    rc = state.get("root_cause")
+    if rc:
+        lines.append(f"Predicted Root Cause: {rc.get('predicted_root_cause', 'N/A')}")
+        lines.append(f"Affected Module: {rc.get('affected_module', 'N/A')}")
+        lines.append(f"Confidence: {rc.get('confidence', 0):.0%}")
+
+    lines += [
+        "",
         "*Remediation Steps Executed:*",
     ]
     for s in state.get("remediation_plan", []):

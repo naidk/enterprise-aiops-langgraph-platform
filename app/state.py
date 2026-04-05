@@ -27,6 +27,25 @@ from __future__ import annotations
 import operator
 from typing import Annotated, Any, Optional, TypedDict
 
+# ── Serialised-model type aliases ─────────────────────────────────────────────
+# These dict types represent Pydantic models serialised via .model_dump(mode="json").
+# Use the corresponding Pydantic class for validation: LogEntry.model_validate(d)
+#
+#   LogEntryDict      → app.schemas.LogEntry
+#   RCAFindingDict    → app.schemas.RCAFinding
+#   RepoFindingDict   → app.schemas.RepoFinding
+#   TestResultDict    → app.schemas.TestResult
+#   RemStepDict       → app.schemas.RemediationStep
+#   RootCauseDict     → app.schemas.RootCauseAnalysis
+#   JiraTicketDict    → app.schemas.JiraTicket
+LogEntryDict    = dict[str, Any]
+RCAFindingDict  = dict[str, Any]
+RepoFindingDict = dict[str, Any]
+TestResultDict  = dict[str, Any]
+RemStepDict     = dict[str, Any]
+RootCauseDict   = dict[str, Any]
+JiraTicketDict  = dict[str, Any]
+
 
 class AIOpsWorkflowState(TypedDict):
     """
@@ -48,18 +67,20 @@ class AIOpsWorkflowState(TypedDict):
     event_summary: str             # One-line summary of the detected event
 
     # ── Log analysis outputs ──────────────────────────────────────────────────
-    log_entries: list[dict]        # Serialised LogEntry list
-    rca_findings: list[dict]       # Serialised RCAFinding list
-    error_patterns: list[str]      # Extracted error pattern strings
+    log_entries: list[LogEntryDict]        # Serialised LogEntry list
+    rca_findings: list[RCAFindingDict]     # Serialised RCAFinding list
+    error_patterns: list[str]              # Extracted error pattern strings
+    repo_findings: list[RepoFindingDict]   # Serialised RepoFinding list
+    test_results: list[TestResultDict]     # Serialised TestResult list
 
-    # ── Incident classifier outputs ───────────────────────────────────────────
-    severity: str                  # Severity enum value
-    failure_category: str          # Refined FailureType value
+    # ── Incident classifier / RCA outputs ─────────────────────────────────────
+    severity: str                  # Severity enum value (e.g. "critical")
     classification_confidence: float
     escalate: bool                 # True → skip auto-remediation, page human
+    root_cause: Optional[RootCauseDict]    # Serialised RootCauseAnalysis or None
 
     # ── Remediation agent outputs ─────────────────────────────────────────────
-    remediation_plan: list[dict]   # Serialised RemediationStep list
+    remediation_plan: list[RemStepDict]    # Serialised RemediationStep list
     remediation_executed: bool
     remediation_success: bool
     remediation_attempts: int
@@ -67,10 +88,10 @@ class AIOpsWorkflowState(TypedDict):
     # ── Validation agent outputs ──────────────────────────────────────────────
     validation_passed: bool
     validation_details: str
-    final_status: str              # IncidentStatus enum value
+    final_status: str              # IncidentStatus enum value (e.g. "resolved")
 
     # ── Jira reporting outputs ────────────────────────────────────────────────
-    jira_ticket: Optional[dict]    # Serialised JiraTicket or None
+    jira_ticket: Optional[JiraTicketDict]  # Serialised JiraTicket or None
     jira_ticket_url: Optional[str]
 
     # ── Accumulating fields (operator.add = list concatenation) ───────────────
@@ -106,16 +127,18 @@ def build_initial_state(
         "event_detected": False,
         "event_summary": "",
 
-        # Log analysis
+        # Log and code analysis
         "log_entries": [],
         "rca_findings": [],
         "error_patterns": [],
+        "repo_findings": [],
+        "test_results": [],
 
-        # Classification
+        # Classification / RCA
         "severity": "unknown",
-        "failure_category": failure_type,
         "classification_confidence": 0.0,
         "escalate": False,
+        "root_cause": None,
 
         # Remediation
         "remediation_plan": [],
