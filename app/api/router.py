@@ -29,6 +29,142 @@ metrics_svc = MetricsService(storage_path=settings.metrics_file)
 simulator = PipelineSimulator()
 
 
+# ── Crash Injection & Alert Endpoints ─────────────────────────────────────────
+
+@router.post("/inject-crash/{crash_type}")
+async def inject_crash(crash_type: str, service: str | None = None):
+    """
+    Inject a real crash into a service to generate a live alert.
+
+    crash_type options: null_pointer | import_error | db_connection | high_latency | memory_leak
+    """
+    from services.failure_injector import inject_crash as _inject
+    try:
+        alert = _inject(crash_type=crash_type, service=service)
+        return {
+            "message": f"Crash injected into '{alert['service']}'",
+            "alert_id": alert["alert_id"],
+            "service": alert["service"],
+            "crash_type": alert["crash_type"],
+            "failure_type": alert["failure_type"],
+            "status": alert["status"],
+            "timestamp": alert["timestamp"],
+            "log_preview": alert["real_logs"][:300] + "...",
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/alerts")
+async def get_alerts():
+    """Get all active (pending/analyzing) alerts waiting for LLM analysis."""
+    from services.failure_injector import get_active_alerts, get_all_alerts
+    return {
+        "active_alerts": get_active_alerts(),
+        "all_alerts": get_all_alerts(),
+    }
+
+
+@router.post("/alerts/{alert_id}/analyze")
+async def analyze_alert(alert_id: str):
+    """
+    Run the full LangGraph AI pipeline on a specific alert.
+    The LLM analyzes the real crash logs and executes remediation.
+    """
+    from services.failure_injector import get_all_alerts, resolve_alert
+    import uuid
+
+    alerts = get_all_alerts()
+    alert = next((a for a in alerts if a["alert_id"] == alert_id), None)
+    if not alert:
+        raise HTTPException(status_code=404, detail=f"Alert {alert_id} not found")
+
+    # Build state with real crash logs injected
+    incident_id = f"INC-{uuid.uuid4().hex[:8].upper()}"
+    state = build_initial_state(
+        incident_id=incident_id,
+        service=alert["service"],
+        failure_type=alert["failure_type"],
+        raw_event={
+            "alert_id": alert["alert_id"],
+            "crash_type": alert["crash_type"],
+            "real_logs": alert["real_logs"],
+            "timestamp": alert["timestamp"],
+        }
+    )
+
+    # Inject the real crash logs into state so LLM sees them
+    state["injected_logs"] = alert["real_logs"]
+
+    # Run the full AI pipeline
+    config = {"configurable": {"thread_id": incident_id}}
+    result = aiops_graph.invoke(state, config=config)
+
+    # Extract LLM findings
+    rca_findings = result.get("rca_findings", [])
+    llm_analysis = rca_findings[0].get("finding", "No findings") if rca_findings else result.get("event_summary", "Analysis complete")
+    remediation = result.get("remediation_plan", [])
+
+    # Mark alert as resolved
+    resolve_alert(alert_id, llm_analysis, remediation)
+
+    # Persist incident
+    def _parse_list(raw, model):
+        out = []
+        for item in raw:
+            try:
+                out.append(model.model_validate(item))
+            except Exception:
+                pass
+        return out
+
+    from app.schemas import (
+        Incident, LogEntry, RCAFinding, RepoFinding,
+        TestResult, RemediationStep, RootCauseAnalysis, JiraTicket
+    )
+
+    severity_val = result.get("severity", "high")
+    title = f"[{severity_val.upper()}] {alert['service']} — {alert['crash_type'].replace('_', ' ').title()} (Real Crash)"
+
+    incident_record = Incident(
+        incident_id=incident_id,
+        title=title,
+        description=f"Real crash detected: {alert['crash_type']} in {alert['service']}",
+        service=alert["service"],
+        failure_type=alert["failure_type"],
+        severity=severity_val,
+        status=result.get("final_status", "resolved"),
+        log_entries=_parse_list(result.get("log_entries", []), LogEntry),
+        rca_findings=_parse_list(rca_findings, RCAFinding),
+        repo_findings=_parse_list(result.get("repo_findings", []), RepoFinding),
+        test_results=_parse_list(result.get("test_results", []), TestResult),
+        remediation_steps=_parse_list(remediation, RemediationStep),
+        audit_trail=result.get("audit_trail", []),
+    )
+    incident_svc.create(incident_record)
+
+    return {
+        "alert_id": alert_id,
+        "incident_id": incident_id,
+        "service": alert["service"],
+        "crash_type": alert["crash_type"],
+        "llm_analysis": llm_analysis,
+        "execution_path": result.get("execution_path", []),
+        "final_severity": result.get("severity"),
+        "final_status": result.get("final_status"),
+        "remediation_steps": len(remediation),
+        "message": f"AI analysis complete — {alert['service']} incident resolved",
+    }
+
+
+@router.delete("/alerts/clear")
+async def clear_alerts():
+    """Clear all alerts (demo reset)."""
+    from services.failure_injector import clear_all_alerts
+    clear_all_alerts()
+    return {"message": "All alerts cleared"}
+
+
 @router.get("/health")
 async def health():
     return {

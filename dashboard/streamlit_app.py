@@ -1,16 +1,5 @@
 """
 Enterprise AIOps Platform — Streamlit Dashboard.
-
-Multi-page dashboard covering:
-    Page 1 — Live Incident Feed        (active incidents, severity breakdown)
-    Page 2 — Pipeline Simulator        (trigger failure scenarios manually to REST API)
-    Page 3 — Metrics & KPIs            (MTTD, MTTR, agent success rate)
-    Page 4 — Audit Log                 (latest Jira ticket activity & logs)
-    Page 5 — Jira Board                (Jira-style ticket view from REST API)
-
-Run locally alongside backend API:
-    uvicorn app.main:app --port 8000 --reload
-    streamlit run dashboard/streamlit_app.py
 """
 import sys
 import time
@@ -18,14 +7,14 @@ from pathlib import Path
 import streamlit as st
 import requests
 
-# Allow running from project root
 ROOT = Path(__file__).parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import pandas as pd
 
-API_BASE_URL = "http://127.0.0.1:8000/api/v1"
+import os
+API_BASE_URL = os.getenv("API_BASE_URL", "http://127.0.0.1:8000/api/v1")
 
 # ── API Wrappers ──────────────────────────────────────────────────────────────
 def fetch_health():
@@ -38,7 +27,7 @@ def fetch_metrics():
     try:
         return requests.get(f"{API_BASE_URL}/metrics", timeout=3).json()
     except Exception:
-        return {"mttd_s": 0, "mttr_s": 0, "agent_success_rate": 0, "auto_remediated": 0, "resolved_incidents": 0, "total_incidents": 0}
+        return {}
 
 def fetch_incidents():
     try:
@@ -52,6 +41,31 @@ def fetch_logs():
     except Exception:
         return []
 
+def fetch_alerts():
+    try:
+        resp = requests.get(f"{API_BASE_URL}/alerts", timeout=3).json()
+        return resp.get("active_alerts", []), resp.get("all_alerts", [])
+    except Exception:
+        return [], []
+
+def inject_crash(crash_type: str):
+    try:
+        return requests.post(f"{API_BASE_URL}/inject-crash/{crash_type}", timeout=10).json()
+    except Exception as e:
+        return {"error": str(e)}
+
+def analyze_alert(alert_id: str):
+    try:
+        return requests.post(f"{API_BASE_URL}/alerts/{alert_id}/analyze", timeout=60).json()
+    except Exception as e:
+        return {"error": str(e)}
+
+def clear_alerts():
+    try:
+        requests.delete(f"{API_BASE_URL}/alerts/clear", timeout=5)
+    except Exception:
+        pass
+
 
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -61,21 +75,26 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ── Sidebar navigation ─────────────────────────────────────────────────────────
+# ── Sidebar ───────────────────────────────────────────────────────────────────
 st.sidebar.title("🛡️ AIOps Platform")
 st.sidebar.caption("Multi-agent self-healing infrastructure")
 
-# Inject Live System Status Hook
 health_data = fetch_health()
 api_status = health_data.get("current_status", "Offline")
 color = "🟢" if api_status == "Healthy" else "🟡" if api_status == "Degraded" else "🔴"
 st.sidebar.markdown(f"**System Status:** {color} `{api_status}`")
+
+# Show live alert count in sidebar
+active_alerts, _ = fetch_alerts()
+if active_alerts:
+    st.sidebar.error(f"🚨 {len(active_alerts)} ACTIVE ALERT(S) — Action Required!")
 
 st.sidebar.divider()
 
 page = st.sidebar.radio(
     "Navigate",
     options=[
+        "🚨 Live Alerts",
         "🔴 Live Incidents",
         "⚡ Pipeline Simulator",
         "📊 Metrics & KPIs",
@@ -86,19 +105,21 @@ page = st.sidebar.radio(
 )
 
 st.sidebar.divider()
-st.sidebar.markdown("**Agent Pipeline Strategy**")
+st.sidebar.markdown("**Agent Pipeline**")
 st.sidebar.code(
     "monitoring_agent\n"
     "  └─ log_analysis\n"
-    "       └─ classifier\n"
-    "            ├─ [CRITICAL] → jira\n"
-    "            └─ [other] → remediation\n"
-    "                  └─ validation\n"
-    "                        └─ jira",
+    "       └─ repo_inspection\n"
+    "            └─ test_analysis\n"
+    "                 └─ root_cause\n"
+    "                      ├─ [CRITICAL] → jira\n"
+    "                      └─ [other] → remediation\n"
+    "                            └─ validation\n"
+    "                                  └─ jira",
     language=None,
 )
 
-# ── Colour maps ────────────────────────────────────────────────────────────────
+# ── Colour maps ───────────────────────────────────────────────────────────────
 _SEVERITY_COLOUR = {
     "critical": "#FF4B4B",
     "high":     "#FF8C00",
@@ -106,15 +127,13 @@ _SEVERITY_COLOUR = {
     "low":      "#2ECC71",
     "unknown":  "#808080",
 }
-
 _STATUS_ICON = {
     "open":        "🔴",
     "analyzing":   "🔵",
-    "validating":  "🟣",
+    "remediating": "🟣",
     "resolved":    "🟢",
     "escalated":   "🚨",
 }
-
 
 def _badge(text: str, colour: str) -> str:
     return (
@@ -123,17 +142,136 @@ def _badge(text: str, colour: str) -> str:
     )
 
 
-# ── Pages ──────────────────────────────────────────────────────────────────────
+# ── Page: Live Alerts ─────────────────────────────────────────────────────────
+def page_live_alerts() -> None:
+    st.title("🚨 Live Alerts — AI-Powered Crash Detection")
+    st.caption("Inject real crashes, let the LLM identify and remediate them automatically.")
+
+    # ── Step 1: Inject a Crash ────────────────────────────────────────────────
+    st.subheader("Step 1: Inject a Real Crash")
+    st.markdown("Select a crash type below. This generates a **real Python exception** with actual traceback logs.")
+
+    crash_options = {
+        "null_pointer":  "💥 Null Pointer Exception (NullPointerException / AttributeError)",
+        "import_error":  "📦 Broken Import (ModuleNotFoundError / ImportError)",
+        "db_connection": "🗄️ Database Connection Failure (ConnectionRefused / Pool Exhausted)",
+        "high_latency":  "⏱️ High Latency / Timeout (p99 > 4200ms, Circuit Breaker Open)",
+        "memory_leak":   "💾 Memory Leak / OOMKill (Container killed, CrashLoopBackOff)",
+    }
+
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        selected_crash = st.selectbox(
+            "Crash Type",
+            options=list(crash_options.keys()),
+            format_func=lambda x: crash_options[x],
+        )
+    with col2:
+        st.markdown("<br>", unsafe_allow_html=True)
+        inject_btn = st.button("💥 Inject Crash", type="primary", use_container_width=True)
+
+    if inject_btn:
+        with st.spinner("Injecting crash into live service..."):
+            result = inject_crash(selected_crash)
+        if "error" not in result:
+            st.error(f"🚨 **ALERT TRIGGERED** — `{result.get('service')}` is DOWN!")
+            st.code(result.get("log_preview", ""), language="text")
+            st.rerun()
+        else:
+            st.error(f"Failed: {result['error']}")
+
+    st.divider()
+
+    # ── Step 2: Active Alerts ─────────────────────────────────────────────────
+    st.subheader("Step 2: Active Alerts Waiting for AI Analysis")
+
+    active_alerts, all_alerts = fetch_alerts()
+
+    if not active_alerts:
+        st.success("✅ No active alerts — all systems healthy. Inject a crash above to test!")
+    else:
+        for alert in active_alerts:
+            with st.container(border=True):
+                col1, col2, col3 = st.columns([3, 1, 1])
+
+                with col1:
+                    st.markdown(f"### 🔴 `{alert['service']}` — {crash_options.get(alert['crash_type'], alert['crash_type'])}")
+                    st.caption(f"Alert ID: `{alert['alert_id']}` | Time: {alert['timestamp'][:19]}")
+
+                with col2:
+                    st.markdown(_badge("CRITICAL", "#FF4B4B"), unsafe_allow_html=True)
+                    st.caption(f"Type: `{alert['failure_type']}`")
+
+                with col3:
+                    analyze_btn = st.button(
+                        "🤖 Run AI Analysis",
+                        key=f"analyze_{alert['alert_id']}",
+                        type="primary",
+                        use_container_width=True,
+                    )
+
+                # Show real crash logs
+                with st.expander("📋 View Real Crash Logs"):
+                    st.code(alert["real_logs"], language="text")
+
+                # Run LLM Analysis
+                if analyze_btn:
+                    with st.spinner(f"🤖 Groq LLM analyzing crash in `{alert['service']}`... Running 8 AI agents..."):
+                        analysis = analyze_alert(alert["alert_id"])
+
+                    if "error" not in analysis:
+                        st.success(f"✅ **AI Analysis Complete** — Incident `{analysis.get('incident_id')}`")
+
+                        r1, r2, r3 = st.columns(3)
+                        r1.metric("Severity", analysis.get("final_severity", "—").upper())
+                        r2.metric("Status", analysis.get("final_status", "—").upper())
+                        r3.metric("Agents Ran", len(analysis.get("execution_path", [])))
+
+                        st.markdown("**🤖 LLM Root Cause Analysis:**")
+                        st.info(analysis.get("llm_analysis", "No analysis"))
+
+                        st.markdown("**🔧 Execution Path:**")
+                        st.code(" → ".join(analysis.get("execution_path", [])), language=None)
+
+                        st.markdown(f"**📋 Remediation Steps Executed:** `{analysis.get('remediation_steps', 0)}` steps")
+                        st.rerun()
+                    else:
+                        st.error(f"Analysis failed: {analysis['error']}")
+
+    st.divider()
+
+    # ── Step 3: Resolved Alerts History ──────────────────────────────────────
+    st.subheader("Step 3: Resolved by AI")
+
+    resolved = [a for a in all_alerts if a.get("status") == "resolved"]
+    if resolved:
+        for alert in reversed(resolved):
+            with st.expander(f"✅ `{alert['service']}` — {alert['crash_type']} — RESOLVED BY AI"):
+                st.markdown(f"**Alert ID:** `{alert['alert_id']}`")
+                st.markdown(f"**LLM Finding:** {alert.get('llm_analysis', 'N/A')}")
+                steps = alert.get("remediation", [])
+                if steps:
+                    st.markdown(f"**Remediation:** {len(steps)} steps executed")
+    else:
+        st.info("Resolved alerts will appear here after AI analysis completes.")
+
+    # Reset button
+    st.divider()
+    if st.button("🔄 Reset All Alerts (Demo Reset)", use_container_width=True):
+        clear_alerts()
+        st.success("All alerts cleared!")
+        st.rerun()
+
+
+# ── Page: Live Incidents ──────────────────────────────────────────────────────
 def page_live_incidents() -> None:
     st.title("🔴 Live Incident Feed")
-    st.caption("Real-time view of active incidents across all monitored services via FastAPI.")
+    st.caption("Real-time view of all incidents processed by the AI pipeline.")
 
     metrics = fetch_metrics()
-    
-    # KPI strip
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Total Incidents", metrics.get("total_incidents", 0))
-    c2.metric("Open / Escalated", metrics.get("open_incidents", 0) + metrics.get("escalated_incidents", 0), delta_color="inverse")
+    c2.metric("Open", metrics.get("open_incidents", 0), delta_color="inverse")
     c3.metric("Resolved", metrics.get("resolved_incidents", 0))
     c4.metric("Auto-Remediated", metrics.get("auto_remediated", 0))
 
@@ -141,20 +279,21 @@ def page_live_incidents() -> None:
 
     incidents = fetch_incidents()
     if not incidents:
-        st.success("🎉 No incidents recorded! Fire a simulation to see data populate.")
+        st.success("🎉 No incidents! Inject a crash on the Live Alerts page to see data.")
         return
 
-    # Incident cards
     for inc in reversed(incidents):
         sev = inc.get("severity", "unknown")
         status = inc.get("status", "unknown").lower()
-        
         col1, col2, col3 = st.columns([3, 1, 1])
         with col1:
             st.markdown(
                 f"**{inc.get('incident_id')}** — `{inc.get('service')}`  \n"
-                f"Failure Detected: *{inc.get('failure_type')}*",
+                f"*{inc.get('title', inc.get('failure_type', ''))}*"
             )
+            rca = inc.get("rca_findings", [])
+            if rca:
+                st.caption(f"🤖 AI Finding: {rca[0].get('finding','')[:100]}")
         with col2:
             st.markdown(_badge(sev, _SEVERITY_COLOUR.get(sev, "#808080")), unsafe_allow_html=True)
         with col3:
@@ -163,133 +302,104 @@ def page_live_incidents() -> None:
         st.divider()
 
 
+# ── Page: Pipeline Simulator ──────────────────────────────────────────────────
 def page_pipeline_simulator() -> None:
     st.title("⚡ Pipeline Simulator")
-    st.caption("Manually trigger a failure type to the backend and trace it through the Multi-Agent Langgraph workflow.")
+    st.caption("Trigger a random failure and trace it through the 8-agent LangGraph workflow.")
 
     col1, col2 = st.columns(2)
-
     with col1:
-        failure_type = st.selectbox(
-            "Failure Type",
-            ["service_crash", "high_latency", "db_connection_failure", "failed_job", "bad_deployment"],
-        )
-        st.info("The system will dynamically spin up an artificial event block and inject it into the router.")
-
+        st.info("Triggers a random failure type across all monitored services.")
+        trigger = st.button("▶ Run Random Monitoring Cycle", type="primary", use_container_width=True)
     with col2:
-        st.markdown("**LangGraph AIOps Trajectory:**")
+        st.markdown("**Pipeline Flow:**")
         st.code(
-            f"1. API Gateway          ← Received REST POST\n"
-            f"2. simulator            ← Generate {failure_type}\n"
-            f"3. -> aiops_graph.invoke()",
+            "monitoring → log_analysis → repo_inspection\n"
+            "  → test_analysis → root_cause\n"
+            "      → remediation → validation → jira",
             language=None,
         )
 
-    trigger = st.button("▶ Trigger End-to-End Cycle", type="primary", use_container_width=True)
-
     if trigger:
-        with st.spinner(f"Pinging FastAPI Backend /api/v1/run-monitoring-cycle…"):
+        with st.spinner("Running full 8-agent AI pipeline..."):
             try:
-                # We can either use raw simulation or global runner. The global runner picks randomly.
-                # Since the user selects failure_type, we will artificially map it via hitting the emit explicitly!
-                # Wait, our endpoint just randomly hits. Let's do a direct simulation pipeline build!
-                # Actually, our Stage 5 endpoint /run-monitoring-cycle doesn't take args currently.
-                # But it has an endpoint. Let's hit the general runner just for visual magic.
                 resp = requests.post(f"{API_BASE_URL}/run-monitoring-cycle", timeout=30)
                 if resp.status_code == 200:
-                    st.success("Pipeline complete! Agent results aggregated.")
-                    st.json(resp.json())
+                    data = resp.json()
+                    st.success(f"Pipeline complete for `{data.get('message','')}`")
+                    c1, c2, c3 = st.columns(3)
+                    c1.metric("Severity", (data.get("final_severity") or "—").upper())
+                    c2.metric("Status", (data.get("final_status") or "—").upper())
+                    c3.metric("Agents", len(data.get("execution_path", [])))
+                    st.code(" → ".join(data.get("execution_path", [])), language=None)
                 else:
-                    st.error(f"Failed to run trace: {resp.text}")
+                    st.error(f"Failed: {resp.text}")
             except Exception as e:
-                st.error(f"Ensure backend is running (uvicorn app.main:app). Errored: {e}")
+                st.error(f"Backend error: {e}")
 
 
+# ── Page: Metrics ─────────────────────────────────────────────────────────────
 def page_metrics() -> None:
     st.title("📊 Metrics & KPIs")
-    st.caption("Platform performance indicators tracking the success rate of Autonomous Remediation rules.")
-
     metrics = fetch_metrics()
-    
-    # MTTD / MTTR
+
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("MTTD", f"{metrics.get('mean_time_to_detect_s', 0):.1f}s",  help="Mean Time To Detect")
-    c2.metric("MTTR", f"{metrics.get('mean_time_to_resolve_s', 0):.1f}s",  help="Mean Time To Resolve")
+    c1.metric("MTTD", f"{metrics.get('mean_time_to_detect_s', 0):.1f}s", help="Mean Time To Detect")
+    c2.metric("MTTR", f"{metrics.get('mean_time_to_resolve_s', 0):.1f}s", help="Mean Time To Resolve")
     c3.metric("Agent Success Rate", f"{metrics.get('agent_success_rate', 0):.0%}")
-    
-    resolved = metrics.get('resolved_incidents', 1)
-    remed = metrics.get('auto_remediated', 0)
-    rate = (remed / resolved) if resolved > 0 else 0
+    resolved = metrics.get("resolved_incidents", 1) or 1
+    rate = metrics.get("auto_remediated", 0) / resolved
     c4.metric("Remediation Efficiency", f"{rate:.0%}")
 
     st.divider()
-
     incidents = fetch_incidents()
     if incidents:
         st.subheader("Incident Volume by Failure Type")
-        
-        # Aggregation
         counts = {}
         for inc in incidents:
             ft = inc.get("failure_type", "Unknown")
             counts[ft] = counts.get(ft, 0) + 1
-            
-        chart_data = pd.DataFrame({
-            "Failure Type": list(counts.keys()),
-            "Total Issues": list(counts.values()),
-        }).set_index("Failure Type")
-        
-        st.bar_chart(chart_data)
+        st.bar_chart(pd.DataFrame({"Count": counts}))
 
         st.subheader("Severity Breakdown")
         sev_counts = {}
         for inc in incidents:
-            s = inc.get("severity", "Unknown")
+            s = inc.get("severity", "unknown")
             sev_counts[s] = sev_counts.get(s, 0) + 1
-        st.bar_chart(pd.DataFrame({"Severity": list(sev_counts.keys()), "Count": list(sev_counts.values())}).set_index("Severity"))
+        st.bar_chart(pd.DataFrame({"Count": sev_counts}))
 
 
+# ── Page: Audit Log ───────────────────────────────────────────────────────────
 def page_audit_log() -> None:
     st.title("📋 Audit Log")
-    st.caption("Immutable Langgraph trail logging active agent chains.")
-
     logs = fetch_logs()
-    
-    search = st.text_input("Search audit log", placeholder="incident ID, actor, or keyword…")
-
+    search = st.text_input("Search logs", placeholder="incident ID, agent, or keyword…")
     if search:
         logs = [e for e in logs if search.lower() in str(e).lower()]
-
     if not logs:
-        st.info("No active logs in the backend router currently.")
+        st.info("No logs yet. Run a monitoring cycle or inject a crash.")
         return
-        
-    for i, entry in enumerate(logs):
-        if "Agent" in entry:
-            agent = entry.split("Agent")[0].split("] ")[-1] + "Agent"
-            action = entry.split("Agent: ")[-1] if "Agent: " in entry else entry
-        else:
-            agent = "System"
-            action = entry
-            
+    for entry in logs:
+        agent = "System"
+        if "] " in entry and "Agent" in entry:
+            parts = entry.split("] ")
+            if len(parts) > 1:
+                agent = parts[1].split(":")[0]
         cols = st.columns([1, 4])
         cols[0].markdown(f"`{agent}`")
-        cols[1].markdown(action)
+        cols[1].markdown(entry.split(": ", 1)[-1] if ": " in entry else entry)
 
 
+# ── Page: Jira Board ──────────────────────────────────────────────────────────
 def page_jira_board() -> None:
     st.title("🎫 Jira Board")
-    st.caption("Jira-style incident ticket tracker mapped explicitly to Incident IDs from LangGraph outputs.")
-
     incidents = fetch_incidents()
-    
     columns = {
-        "Open": [i for i in incidents if str(i.get("status")).lower() == "open"],
+        "Open":        [i for i in incidents if str(i.get("status")).lower() == "open"],
         "In Progress": [i for i in incidents if str(i.get("status")).lower() in ("triaged", "analyzing", "remediating")],
-        "Escalated": [i for i in incidents if str(i.get("status")).lower() == "escalated"],
-        "Done": [i for i in incidents if str(i.get("status")).lower() in ("resolved", "closed")],
+        "Escalated":   [i for i in incidents if str(i.get("status")).lower() == "escalated"],
+        "Done":        [i for i in incidents if str(i.get("status")).lower() in ("resolved", "closed")],
     }
-
     cols = st.columns(len(columns))
     for col, (status, classified) in zip(cols, columns.items()):
         with col:
@@ -301,11 +411,15 @@ def page_jira_board() -> None:
                     st.markdown(f"**{inc['incident_id']}**")
                     st.markdown(_badge(sev, _SEVERITY_COLOUR.get(sev, "#808080")), unsafe_allow_html=True)
                     st.caption(f"`{inc['service']}`")
-                    st.caption(f"{inc.get('failure_type')}")
+                    st.caption(inc.get("failure_type", ""))
+                    rca = inc.get("rca_findings", [])
+                    if rca:
+                        st.caption(f"🤖 {rca[0].get('finding','')[:80]}")
 
 
-# ── Router ─────────────────────────────────────────────────────────────────────
+# ── Router ────────────────────────────────────────────────────────────────────
 _PAGE_MAP = {
+    "🚨 Live Alerts":       page_live_alerts,
     "🔴 Live Incidents":    page_live_incidents,
     "⚡ Pipeline Simulator": page_pipeline_simulator,
     "📊 Metrics & KPIs":    page_metrics,
