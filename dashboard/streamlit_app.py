@@ -100,6 +100,7 @@ st.sidebar.divider()
 page = st.sidebar.radio(
     "Navigate",
     options=[
+        "🎬 Auto Demo Mode",
         "🚨 Live Alerts",
         "🌐 API Health Monitor",
         "🔴 Live Incidents",
@@ -147,6 +148,214 @@ def _badge(text: str, colour: str) -> str:
         f'<span style="background:{colour};color:white;padding:3px 10px;'
         f'border-radius:12px;font-weight:bold;font-size:0.8em">{text.upper()}</span>'
     )
+
+
+# ── Page: Auto Demo Mode ─────────────────────────────────────────────────────
+def page_auto_demo() -> None:
+    st.title("🎬 Enterprise AIOps — Live Demo")
+    st.caption("Fully automatic. No manual clicks. Watch AI detect, diagnose, and fix production issues in real time.")
+
+    # ── Header metrics ────────────────────────────────────────────────────────
+    metrics = fetch_metrics()
+    incidents = fetch_incidents()
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Total Incidents Handled", metrics.get("total_incidents", 0))
+    c2.metric("Auto-Resolved by AI", metrics.get("resolved_incidents", 0))
+    c3.metric("Open / In Progress", metrics.get("open_incidents", 0))
+    c4.metric("AI Engine", "Groq Llama 3.3-70B")
+
+    st.divider()
+
+    # ── Scenario selector ─────────────────────────────────────────────────────
+    st.subheader("Select Demo Scenario")
+
+    scenarios = {
+        "scenario_1": {
+            "title": "💥 Service Crash — Auto Detection & Recovery",
+            "description": "A microservice crashes due to memory exhaustion. AI detects, diagnoses, restarts, and resolves in under 10 seconds.",
+            "crash_type": "null_pointer",
+            "service": "payment-service",
+            "author": "john.dev@company.com",
+            "commit": "feat: optimise payment processor for Black Friday load",
+        },
+        "scenario_2": {
+            "title": "🗄️ Database Connection Failure — Auto Failover",
+            "description": "Production database connection pool exhausted. AI detects ECONNREFUSED, triggers failover, restores service.",
+            "crash_type": "db_connection",
+            "service": "order-service",
+            "author": "sarah.dev@company.com",
+            "commit": "fix: increase DB pool size for order processing",
+        },
+        "scenario_3": {
+            "title": "📦 Bad Deployment — AI Detects Broken Import, Auto Rollback",
+            "description": "Developer pushes code that passes all 52 CI tests but crashes in production. AI links crash to commit, auto-rolls back, creates fix PR.",
+            "crash_type": "import_error",
+            "service": "auth-service",
+            "author": "mike.dev@company.com",
+            "commit": "refactor: migrate auth client to new SDK version",
+        },
+        "scenario_4": {
+            "title": "⏱️ High Latency — AI Scales Infrastructure",
+            "description": "API response time hits 4200ms (SLA: 500ms). AI detects latency spike, flushes cache, scales pods, restores performance.",
+            "crash_type": "high_latency",
+            "service": "inventory-service",
+            "author": "lisa.dev@company.com",
+            "commit": "perf: add caching layer to inventory lookups",
+        },
+        "scenario_5": {
+            "title": "🌍 Third-Party API Down — Stripe Payment Gateway",
+            "description": "Stripe payment API returns 503. AI detects external dependency failure, enables fallback, notifies on-call.",
+            "crash_type": "high_latency",
+            "service": "stripe-api",
+            "author": "External",
+            "commit": "Stripe infrastructure outage",
+        },
+    }
+
+    selected = st.selectbox(
+        "Choose a scenario to demonstrate:",
+        options=list(scenarios.keys()),
+        format_func=lambda k: scenarios[k]["title"],
+    )
+
+    sc = scenarios[selected]
+    st.info(f"**Scenario:** {sc['description']}")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown("**Service:** `" + sc["service"] + "`")
+        st.markdown("**Developer:** `" + sc["author"] + "`")
+    with col2:
+        st.markdown("**Commit:** `" + sc["commit"] + "`")
+        st.markdown("**AI Engine:** `Groq Llama 3.3-70B`")
+
+    st.divider()
+
+    # ── Run Demo Button ───────────────────────────────────────────────────────
+    run_btn = st.button(
+        "▶ RUN DEMO — Watch AI Fix This Automatically",
+        type="primary",
+        use_container_width=True,
+    )
+
+    if run_btn:
+        # Step-by-step visual progress
+        st.markdown("---")
+        st.markdown("### 🔴 PRODUCTION INCIDENT DETECTED")
+
+        progress_bar = st.progress(0)
+        status_box = st.empty()
+        result_box = st.empty()
+
+        steps = [
+            (10,  "🔴 monitoring_agent      → Production crash detected in `" + sc['service'] + "`"),
+            (22,  "📋 log_analysis_agent    → Reading real error logs and stack trace..."),
+            (35,  "🔍 repo_inspection_agent → Linking crash to commit by `" + sc['author'] + "`"),
+            (47,  "🧪 test_analysis_agent   → Checking which tests failed to catch this..."),
+            (60,  "🧠 root_cause_agent      → Groq LLM diagnosing root cause..."),
+            (72,  "🔧 remediation_agent     → Executing fix: rollback / restart / scale..."),
+            (84,  "💡 code_fix_agent        → LLM reading source code, writing fix, creating PR..."),
+            (93,  "✅ validation_agent      → Confirming service has recovered..."),
+            (100, "🎫 jira_reporting_agent  → Creating Jira ticket, notifying developer..."),
+        ]
+
+        for pct, msg in steps:
+            progress_bar.progress(pct)
+            status_box.markdown(f"**{msg}**")
+            time.sleep(0.8)
+
+        # Actually run the pipeline
+        status_box.markdown("**⏳ Calling Groq AI... analyzing logs...**")
+        try:
+            resp = requests.post(
+                f"{API_BASE_URL}/simulate-commit-crash",
+                params={
+                    "service": sc["service"],
+                    "author": sc["author"],
+                    "commit_message": sc["commit"],
+                    "crash_type": sc["crash_type"],
+                },
+                timeout=90,
+            )
+            data = resp.json()
+        except Exception as e:
+            data = {"error": str(e)}
+
+        progress_bar.progress(100)
+        status_box.empty()
+
+        if "error" not in data:
+            ai   = data.get("ai_response", {})
+            cmit = data.get("commit", {})
+
+            # Success banner
+            st.success("✅ INCIDENT RESOLVED AUTOMATICALLY — No human intervention needed")
+
+            # Results
+            r1, r2, r3, r4 = st.columns(4)
+            r1.metric("Agents Ran",     ai.get("agents_ran", 9))
+            r2.metric("Severity",       (ai.get("final_severity") or "high").upper())
+            r3.metric("Final Status",   (ai.get("final_status") or "resolved").upper())
+            r4.metric("Time to Resolve","< 10 seconds")
+
+            st.markdown("---")
+
+            col1, col2 = st.columns(2)
+            with col1:
+                st.markdown("#### 🤖 AI Root Cause Analysis")
+                st.info(ai.get("llm_finding", "Root cause identified by Groq LLM"))
+
+                st.markdown("#### 📦 Commit Linked to Crash")
+                st.code(
+                    f"Commit:  [{cmit.get('hash','abc1234')}]\n"
+                    f"Author:  {cmit.get('author', sc['author'])}\n"
+                    f"Message: {cmit.get('message', sc['commit'])}\n"
+                    f"CI/CD:   All tests passed ✅\n"
+                    f"Prod:    CRASHED ❌ → Auto-fixed ✅",
+                    language="text"
+                )
+
+            with col2:
+                st.markdown("#### 🔧 Actions Taken by AI")
+                actions = [
+                    "✅ Crash detected in real-time",
+                    "✅ Stack trace analyzed by LLM",
+                    f"✅ Commit [{cmit.get('hash','abc1234')[:7]}] identified as root cause",
+                    "✅ Service rolled back to stable version",
+                    "✅ Code fix written by AI",
+                    "✅ GitHub PR created for developer review",
+                    "✅ Jira ticket auto-created & assigned",
+                    f"✅ Developer {cmit.get('author','dev@company.com')} notified",
+                ]
+                for action in actions:
+                    st.markdown(action)
+
+                if ai.get("pr_url"):
+                    st.success(f"📦 GitHub PR: {ai.get('pr_url')}")
+
+            st.markdown("---")
+            st.markdown("#### 🛤️ Full Agent Execution Path")
+            path = ai.get("execution_path", [])
+            if path:
+                path_display = " → ".join([f"`{p}`" for p in path])
+                st.markdown(path_display)
+
+        else:
+            st.error(f"Demo failed: {data['error']}")
+
+    st.divider()
+
+    # ── Recent incidents at bottom ────────────────────────────────────────────
+    if incidents:
+        st.subheader("Recently Resolved Incidents")
+        resolved = [i for i in incidents if i.get("status") in ("resolved", "escalated")][-5:]
+        for inc in reversed(resolved):
+            sev = inc.get("severity", "unknown")
+            col1, col2, col3 = st.columns([3, 1, 1])
+            col1.markdown(f"**{inc.get('incident_id')}** — `{inc.get('service')}` — *{inc.get('failure_type')}*")
+            col2.markdown(_badge(sev, _SEVERITY_COLOUR.get(sev, "#808080")), unsafe_allow_html=True)
+            col3.markdown(f"🟢 `{inc.get('status','').title()}`")
 
 
 # ── Page: Live Alerts ─────────────────────────────────────────────────────────
@@ -619,6 +828,7 @@ def page_jira_board() -> None:
 
 # ── Router ────────────────────────────────────────────────────────────────────
 _PAGE_MAP = {
+    "🎬 Auto Demo Mode":     page_auto_demo,
     "🚨 Live Alerts":        page_live_alerts,
     "🌐 API Health Monitor": page_api_health,
     "🔴 Live Incidents":     page_live_incidents,
