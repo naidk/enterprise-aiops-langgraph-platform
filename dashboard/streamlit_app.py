@@ -48,6 +48,12 @@ def fetch_alerts():
     except Exception:
         return [], []
 
+def fetch_api_health():
+    try:
+        return requests.get(f"{API_BASE_URL}/api-health", timeout=3).json()
+    except Exception:
+        return {"apis": {}, "summary": {"total": 0, "healthy": 0, "degraded": 0, "down": 0}, "incidents": []}
+
 def inject_crash(crash_type: str):
     try:
         return requests.post(f"{API_BASE_URL}/inject-crash/{crash_type}", timeout=10).json()
@@ -95,6 +101,7 @@ page = st.sidebar.radio(
     "Navigate",
     options=[
         "🚨 Live Alerts",
+        "🌐 API Health Monitor",
         "🔴 Live Incidents",
         "⚡ Pipeline Simulator",
         "📊 Metrics & KPIs",
@@ -335,6 +342,127 @@ def page_live_alerts() -> None:
         st.rerun()
 
 
+# ── Page: API Health Monitor ─────────────────────────────────────────────────
+def page_api_health() -> None:
+    st.title("🌐 API Health Monitor")
+    st.caption("Real-time health of all internal and external APIs. Inject an issue to see AI auto-diagnosis.")
+
+    health = fetch_api_health()
+    summary = health.get("summary", {})
+
+    # Summary strip
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Total APIs", summary.get("total", 0))
+    c2.metric("Healthy", summary.get("healthy", 0))
+    c3.metric("Degraded", summary.get("degraded", 0), delta_color="inverse")
+    c4.metric("Down", summary.get("down", 0), delta_color="inverse")
+
+    st.divider()
+
+    # API status table
+    st.subheader("Live API Status")
+    apis = health.get("apis", {})
+
+    _API_LIST = ["payment-api", "auth-api", "order-api", "stripe-api", "sendgrid-api", "notification-api"]
+    _ISSUE_LIST = ["5xx_error", "timeout", "auth_failure", "rate_limit", "schema_break", "third_party_down", "high_latency"]
+    _ISSUE_LABELS = {
+        "5xx_error":        "💥 500 Internal Server Error",
+        "timeout":          "⏱️ Gateway Timeout (504)",
+        "auth_failure":     "🔐 Auth Failed (401 Unauthorized)",
+        "rate_limit":       "🚦 Rate Limit Exceeded (429)",
+        "schema_break":     "📋 Schema Validation Error (422)",
+        "third_party_down": "🌍 Third-Party API Down (503)",
+        "high_latency":     "🐢 High Latency (p99 > 4000ms)",
+    }
+
+    _STATUS_COLOUR = {"healthy": "#2ECC71", "degraded": "#FF8C00", "down": "#FF4B4B"}
+
+    # Display each API
+    for api_name in _API_LIST:
+        api_data = apis.get(api_name, {})
+        status    = api_data.get("status", "healthy")
+        code      = api_data.get("status_code", 200)
+        latency   = api_data.get("latency_ms", "-")
+        err_rate  = api_data.get("error_rate", 0.0)
+        api_type  = api_data.get("type", "internal")
+        colour    = _STATUS_COLOUR.get(status, "#2ECC71")
+
+        col1, col2, col3, col4, col5 = st.columns([2, 1, 1, 1, 1])
+        with col1:
+            st.markdown(
+                f'<span style="background:{colour};color:white;padding:2px 8px;'
+                f'border-radius:8px;font-size:0.75em">{status.upper()}</span> '
+                f'**{api_name}** `{api_type}`',
+                unsafe_allow_html=True,
+            )
+        col2.markdown(f"`{code}`")
+        col3.markdown(f"`{latency}ms`" if isinstance(latency, int) else "`-`")
+        col4.markdown(f"`{err_rate:.0%}`" if isinstance(err_rate, float) else "`0%`")
+        if api_data.get("last_error"):
+            col5.caption(api_data["last_error"][:30])
+
+    st.divider()
+
+    # Inject API Issue
+    st.subheader("Inject an API Issue — Watch AI Fix It")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        selected_api = st.selectbox("API", _API_LIST)
+    with col2:
+        selected_issue = st.selectbox("Issue Type", _ISSUE_LIST,
+                                       format_func=lambda x: _ISSUE_LABELS.get(x, x))
+
+    if st.button("🚨 Inject API Issue + Run AI Analysis", type="primary", use_container_width=True):
+        with st.spinner(f"Injecting {selected_issue} into {selected_api}... AI agents analyzing..."):
+            try:
+                resp = requests.post(
+                    f"{API_BASE_URL}/api-health/inject/{selected_api}/{selected_issue}",
+                    timeout=60,
+                )
+                data = resp.json()
+            except Exception as e:
+                data = {"error": str(e)}
+
+        if "error" not in data:
+            ai = data.get("ai_response", {})
+
+            st.error(f"🚨 **{data['error']}** detected on `{data['api_name']}`")
+
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric("HTTP Status", data.get("status_code"))
+            col2.metric("Latency", f"{data.get('latency_ms')}ms")
+            col3.metric("Error Rate", data.get("error_rate"))
+            col4.metric("AI Agents", ai.get("agents_ran"))
+
+            st.success(f"✅ AI resolved: `{ai.get('final_status')}` | Severity: `{ai.get('final_severity')}`")
+            st.info(f"🤖 LLM Diagnosis: {ai.get('llm_diagnosis', '')}")
+
+            if ai.get("pr_url"):
+                st.success(f"📦 GitHub PR created: {ai.get('pr_url')}")
+
+            st.code(" → ".join(ai.get("execution_path", [])), language=None)
+            st.rerun()
+        else:
+            st.error(f"Failed: {data['error']}")
+
+    st.divider()
+
+    # Resolved API incidents
+    resolved = [i for i in health.get("incidents", []) if i.get("status") == "resolved"]
+    if resolved:
+        st.subheader("Resolved API Incidents")
+        for inc in reversed(resolved):
+            with st.expander(f"✅ `{inc['api_name']}` — {inc['issue_type']} — RESOLVED"):
+                st.markdown(f"**Error:** `{inc['error']}` (HTTP {inc['status_code']})")
+                st.markdown(f"**Log:** {inc['log']}")
+                st.markdown(f"**Resolution:** {inc.get('resolution','')[:150]}")
+
+    if st.button("🔄 Reset API Health (Demo Reset)", use_container_width=True):
+        requests.delete(f"{API_BASE_URL}/api-health/clear", timeout=5)
+        st.rerun()
+
+
 # ── Page: Live Incidents ──────────────────────────────────────────────────────
 def page_live_incidents() -> None:
     st.title("🔴 Live Incident Feed")
@@ -491,12 +619,13 @@ def page_jira_board() -> None:
 
 # ── Router ────────────────────────────────────────────────────────────────────
 _PAGE_MAP = {
-    "🚨 Live Alerts":       page_live_alerts,
-    "🔴 Live Incidents":    page_live_incidents,
-    "⚡ Pipeline Simulator": page_pipeline_simulator,
-    "📊 Metrics & KPIs":    page_metrics,
-    "📋 Audit Log":         page_audit_log,
-    "🎫 Jira Board":        page_jira_board,
+    "🚨 Live Alerts":        page_live_alerts,
+    "🌐 API Health Monitor": page_api_health,
+    "🔴 Live Incidents":     page_live_incidents,
+    "⚡ Pipeline Simulator":  page_pipeline_simulator,
+    "📊 Metrics & KPIs":     page_metrics,
+    "📋 Audit Log":          page_audit_log,
+    "🎫 Jira Board":         page_jira_board,
 }
 
 _PAGE_MAP[page]()

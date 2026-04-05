@@ -165,6 +165,114 @@ async def clear_alerts():
     return {"message": "All alerts cleared"}
 
 
+# ── API Health Monitoring Endpoints ───────────────────────────────────────────
+
+@router.get("/api-health")
+async def get_api_health():
+    """Get health status of all monitored APIs (internal + external)."""
+    from services.api_monitor import get_api_health, get_summary
+    health = get_api_health()
+    health["summary"] = get_summary(health)
+    return health
+
+
+@router.post("/api-health/inject/{api_name}/{issue_type}")
+async def inject_api_issue(api_name: str, issue_type: str):
+    """
+    Inject an API issue for testing.
+
+    api_name:  payment-api | auth-api | order-api | stripe-api | sendgrid-api | notification-api
+    issue_type: 5xx_error | timeout | auth_failure | rate_limit | schema_break | third_party_down | high_latency
+    """
+    from services.api_monitor import inject_api_issue as _inject
+    incident = _inject(api_name=api_name, issue_type=issue_type)
+
+    # Run the full AI pipeline on this API issue
+    incident_id = f"INC-API-{incident['incident_id']}"
+    state = build_initial_state(
+        incident_id=incident_id,
+        service=api_name,
+        failure_type=incident["failure_type"],
+        raw_event={
+            "api_name": api_name,
+            "issue_type": issue_type,
+            "status_code": incident["status_code"],
+            "error": incident["error"],
+            "real_logs": incident["log"],
+            "latency_ms": incident["latency_ms"],
+            "error_rate": incident["error_rate"],
+            "timestamp": incident["timestamp"],
+        }
+    )
+    state["injected_logs"] = incident["log"]
+
+    config = {"configurable": {"thread_id": incident_id}}
+    result = aiops_graph.invoke(state, config=config)
+
+    rca_findings = result.get("rca_findings", [])
+    llm_analysis = rca_findings[0].get("finding", "") if rca_findings else result.get("event_summary", "")
+
+    from services.api_monitor import resolve_api_incident
+    resolve_api_incident(incident["incident_id"], llm_analysis)
+
+    # Persist incident
+    def _p(raw, model):
+        out = []
+        for item in raw:
+            try:
+                out.append(model.model_validate(item))
+            except Exception:
+                pass
+        return out
+
+    from app.schemas import Incident, LogEntry, RCAFinding, RepoFinding, TestResult, RemediationStep
+
+    severity_val = result.get("severity", "high")
+    incident_record = Incident(
+        incident_id=incident_id,
+        title=f"[{severity_val.upper()}] {api_name} — {issue_type.replace('_',' ').title()} (API Issue)",
+        description=f"API issue detected: {incident['error']} on {api_name}",
+        service=api_name,
+        failure_type=incident["failure_type"],
+        severity=severity_val,
+        status=result.get("final_status", "resolved"),
+        log_entries=_p(result.get("log_entries", []), LogEntry),
+        rca_findings=_p(rca_findings, RCAFinding),
+        repo_findings=_p(result.get("repo_findings", []), RepoFinding),
+        test_results=_p(result.get("test_results", []), TestResult),
+        remediation_steps=_p(result.get("remediation_plan", []), RemediationStep),
+        audit_trail=result.get("audit_trail", []),
+    )
+    incident_svc.create(incident_record)
+
+    return {
+        "message": f"API issue detected and handled by AI",
+        "api_name": api_name,
+        "issue_type": issue_type,
+        "incident_id": incident_id,
+        "status_code": incident["status_code"],
+        "error": incident["error"],
+        "latency_ms": incident["latency_ms"],
+        "error_rate": f"{incident['error_rate']:.0%}",
+        "ai_response": {
+            "agents_ran": len(result.get("execution_path", [])),
+            "execution_path": result.get("execution_path", []),
+            "final_severity": result.get("severity"),
+            "final_status": result.get("final_status"),
+            "llm_diagnosis": llm_analysis[:200],
+            "pr_url": result.get("code_fix", {}).get("pr_url") if result.get("code_fix") else None,
+        }
+    }
+
+
+@router.delete("/api-health/clear")
+async def clear_api_health():
+    """Reset API health data for demo."""
+    from services.api_monitor import clear_api_health
+    clear_api_health()
+    return {"message": "API health data cleared"}
+
+
 # ── Developer Commit Crash Simulation ─────────────────────────────────────────
 
 @router.post("/simulate-commit-crash")
